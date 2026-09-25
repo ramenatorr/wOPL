@@ -26,6 +26,10 @@
 #define HINT_HEIGHT    32
 #define DECORATOR_SIZE 20
 
+// Default ItemCounter row: in the gap between the last row of the built-in list theme's ItemsList
+// (y 38 + 20 rows * MENU_ITEM_HEIGHT = 418) and the hint bar (screenHeight - HINT_HEIGHT = 448).
+#define ITEM_COUNTER_POS_V 432
+
 extern const char theme_list_cfg;
 extern u16 size_theme_list_cfg;
 
@@ -63,6 +67,7 @@ enum ELEM_ATTRIBUTE_TYPE {
     ELEM_TYPE_LOADING_ICON,
     ELEM_TYPE_BDM_INDEX,
     ELEM_TYPE_COVERFLOW,
+    ELEM_TYPE_ITEM_COUNTER,
 
     ELEM_TYPE_COUNT
 };
@@ -75,7 +80,8 @@ enum ELEM_ATTRIBUTE_TYPE {
 #define SIZING_CLIP 0
 #define SIZING_WRAP 1
 
-static const char *elementsType[ELEM_TYPE_COUNT] = {
+// Index-aligned with enum ELEM_ATTRIBUTE_TYPE: add new names at the same position as the enum entry.
+static const char *elementsType[] = {
     "AttributeText",
     "StaticText",
     "AttributeImage",
@@ -93,7 +99,10 @@ static const char *elementsType[ELEM_TYPE_COUNT] = {
     "LoadingIcon",
     "BdmIndex",
     "Coverflow",
+    "ItemCounter",
 };
+
+_Static_assert(sizeof(elementsType) / sizeof(elementsType[0]) == ELEM_TYPE_COUNT, "elementsType must stay index-aligned with enum ELEM_ATTRIBUTE_TYPE");
 
 static const char *formatInfoImageAttr(const char *prefix, const char *value, char *out, size_t outSize)
 {
@@ -1116,6 +1125,50 @@ static void drawBDMIndex(struct menu_list *menu, struct submenu_list *item, rend
         rmDrawPixmap(indexTex, x, elem->posY, elem->aligned, elem->width, elem->height, elem->scaled, gDefaultCol, 0);
 }
 
+// ItemCounter //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Renders "<1-based position of the highlighted entry> / <entries>" for the list currently on screen.
+// The on-screen submenu is the truth for both numbers: it is what the pad navigates and what a camera sees.
+// After a boot or a refresh the GUI appends entries a few per frame while the driver already knows the final
+// count, so nothing is drawn until the walked total matches the driver count: the counter appearing doubles as
+// the "list fully loaded" signal, and a partial total is never shown.
+static void drawItemCounter(struct menu_list *menu, struct submenu_list *item, render_ctx_t *ctx, struct theme_element *elem)
+{
+    if (!item || menu->item->visible == 0)
+        return;
+
+    item_list_t *list = menu->item->userdata;
+    if (!list || !list->itemGetCount)
+        return;
+
+    int driverCount = list->itemGetCount(list);
+    if (driverCount <= 0)
+        return;
+
+    int total = 0, position = 0;
+    submenu_list_t *node;
+    for (node = menu->item->submenu; node; node = node->next) {
+        total++;
+        if (node == item)
+            position = total;
+    }
+
+    if (total == 0 || position == 0 || total != driverCount)
+        return;
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d / %d", position, total);
+    fntRenderString(elem->font, elem->posX, elem->posY, elem->aligned, 0, 0, buf, elem->color);
+}
+
+static theme_element_t *initItemCounter(const char *themePath, config_t *themeConfig, theme_t *theme, const char *name)
+{
+    // Selected-text colour and the main font: it has to stay high contrast and readable on a capture.
+    theme_element_t *elem = initBasic(themePath, themeConfig, theme, name, ELEM_TYPE_ITEM_COUNTER, screenWidth >> 1, ITEM_COUNTER_POS_V, ALIGN_CENTER, DIM_UNDEF, DIM_UNDEF, SCALING_RATIO, theme->selTextColor, theme->fonts[0]);
+    elem->drawElem = &drawItemCounter;
+    return elem;
+}
+
 static void drawItemsList(struct menu_list *menu, struct submenu_list *item, render_ctx_t *ctx, struct theme_element *elem)
 {
     if (item) {
@@ -1485,6 +1538,26 @@ static void validateItemsList(const char *themePath, config_t *themeConfig, them
     }
 }
 
+static void validateItemCounter(const char *themePath, config_t *themeConfig, theme_t *theme, theme_elems_t *mainElems)
+{
+    theme_element_t *elem = mainElems->first;
+    while (elem) {
+        if (elem->type == ELEM_TYPE_ITEM_COUNTER)
+            return;
+        elem = elem->next;
+    }
+
+    LOG("THEMES No ItemCounter found, adding a default one\n");
+    elem = initItemCounter(themePath, themeConfig, theme, "ic");
+    if (mainElems->last) {
+        mainElems->last->next = elem;
+        mainElems->last = elem;
+    } else {
+        mainElems->first = elem;
+        mainElems->last = elem;
+    }
+}
+
 static void validateGUIElems(const char *themePath, config_t *themeConfig, theme_t *theme)
 {
     // 1. check we have a valid Background elements
@@ -1572,6 +1645,8 @@ static int addGUIElem(const char *themePath, config_t *themeConfig, theme_t *the
             } else if (!strcmp(elementsType[ELEM_TYPE_BDM_INDEX], type)) {
                 elem = initBasic(themePath, themeConfig, theme, name, ELEM_TYPE_BDM_INDEX, screenWidth >> 1, 355, ALIGN_CENTER, DIM_UNDEF, DIM_UNDEF, SCALING_RATIO, gDefaultCol, theme->fonts[0]);
                 elem->drawElem = &drawBDMIndex;
+            } else if (!strcmp(elementsType[ELEM_TYPE_ITEM_COUNTER], type)) {
+                elem = initItemCounter(themePath, themeConfig, theme, name);
             } else if (!strcmp(elementsType[ELEM_TYPE_COVERFLOW], type)) {
                 elem = initBasic(themePath, themeConfig, theme, name, ELEM_TYPE_COVERFLOW, 0, 0, ALIGN_NONE, DIM_UNDEF, DIM_UNDEF, SCALING_NONE, gDefaultCol, theme->fonts[0]);
                 initCoverflow(themePath, themeConfig, theme, elem, name, 10, NULL, NULL);
@@ -1923,6 +1998,9 @@ static void thmLoad(const char *themePath, int themeID)
 
     if (themePath)
         validateGUIElems(themePath, &themeConfig, newT);
+
+    // The games page always gets an ItemCounter, built-in themes included (validateGUIElems only runs for theme files)
+    validateItemCounter(themePath, &themeConfig, newT, &newT->mainElems);
 
     newT->itemsList = newT->gamesItemsList;
 
