@@ -1163,8 +1163,10 @@ static void drawItemCounter(struct menu_list *menu, struct submenu_list *item, r
 
 static theme_element_t *initItemCounter(const char *themePath, config_t *themeConfig, theme_t *theme, const char *name)
 {
-    // Selected-text colour and the main font: it has to stay high contrast and readable on a capture.
-    theme_element_t *elem = initBasic(themePath, themeConfig, theme, name, ELEM_TYPE_ITEM_COUNTER, screenWidth >> 1, ITEM_COUNTER_POS_V, ALIGN_CENTER, DIM_UNDEF, DIM_UNDEF, SCALING_RATIO, theme->selTextColor, theme->fonts[0]);
+    // UI text colour (white by default) and the main font: it has to stay readable on a capture. Not the
+    // selected-text colour, which is #2a2a2a on the built-in theme and vanishes in the dark bottom band
+    // where the counter sits (the built-in HintText is explicitly white there for the same reason).
+    theme_element_t *elem = initBasic(themePath, themeConfig, theme, name, ELEM_TYPE_ITEM_COUNTER, screenWidth >> 1, ITEM_COUNTER_POS_V, ALIGN_CENTER, DIM_UNDEF, DIM_UNDEF, SCALING_RATIO, theme->uiTextColor, theme->fonts[0]);
     elem->drawElem = &drawItemCounter;
     return elem;
 }

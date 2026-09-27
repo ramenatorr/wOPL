@@ -153,7 +153,7 @@ These are all optional and will use default values if omitted.
 
 `ItemCounter` is a text element that renders the highlighted entry's 1-based position and the number of entries of the games list on screen, formatted exactly as `12 / 345`. It is only drawn once the list is fully loaded (the on-screen list matches the device's game count): while a list is still being populated after a boot or a refresh nothing is shown, so the counter appearing also means "list loaded".
 
-The built-in themes show it centred below the list in the selected-text colour, and a theme that does not declare one on the games page gets that default automatically. To place it yourself, declare it in `wopl_theme.cfg` like any other element:
+The built-in themes show it centred below the list in the UI text colour (white by default), and a theme that does not declare one on the games page gets that default automatically. To place it yourself, declare it in `wopl_theme.cfg` like any other element:
 
 ```
 main9: {
@@ -169,7 +169,7 @@ main9: {
 | --------- | -------------------------------------------------------------------------------------------- |
 | `x`, `y`  | Position; negative values count from the right/bottom edge, `POS_MID` centres on that axis   |
 | `aligned` | `0` anchors the text's top-left at x/y, `1` centres it on x/y (`2` has no effect on text)   |
-| `color`   | Text colour, defaults to `sel_text_color`                                                    |
+| `color`   | Text colour, defaults to `ui_text_color`                                                     |
 | `font`    | Font slot (`font1`..) to use instead of the default font                                     |
 
 <img src="previews/uOPL.png" height="300" />
