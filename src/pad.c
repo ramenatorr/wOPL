@@ -160,13 +160,12 @@ static int initializePad(struct pad_data_t *pad)
     // When using MMODE_LOCK, user cant change mode with Select button
     padSetMainMode(pad->port, pad->slot, PAD_MMODE_DUALSHOCK, PAD_MMODE_LOCK);
 
-    waitPadReady(pad);
-    tmp = padInfoPressMode(pad->port, pad->slot);
-    LOG("PAD infoPressMode: %d\n", tmp);
-
-    waitPadReady(pad);
-    tmp = padEnterPressMode(pad->port, pad->slot);
-    LOG("PAD enterPressMode: %d\n", tmp);
+    // retrobox: the menu never uses pressure-sensitive buttons, so the pad is left in plain analog
+    // mode (0x73, 9-byte polls) instead of pressure mode (0x79, 21-byte polls). A DualShock emulator
+    // on the controller port (the retrobox "hands" Pico) recovers a poll the console cuts short only
+    // within a 9-byte transaction; in pressure mode a single cut-short poll shifts every reply after
+    // it and OPL's pad init loops without ever settling. Games run their own pad init and are not
+    // affected. (Upstream calls padInfoPressMode + padEnterPressMode here.)
 
     waitPadReady(pad);
     pad->actuators = padInfoAct(pad->port, pad->slot, -1, 0);
