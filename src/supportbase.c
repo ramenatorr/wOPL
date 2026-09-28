@@ -1173,7 +1173,10 @@ int sbPrepare(base_game_info_t *game, const per_game_cfg_t *pgcfg, int size_cdvd
 
 
 #ifdef PADEMU
-    gEnablePadEmu = gGlobalGameCfg.pademu_enable;
+    // retrobox: the global Pad Emulator setting is what lets the MENU read a USB DS3 (the retrobox hands Pico),
+    // so it stays on -- but games boot without the pad emulator unless their own per-game settings enable it.
+    // With it loaded into every game, 3 of 10 launches hung black at boot; with it off, 0 of 8 (2026-09-27).
+    gEnablePadEmu = 0;
     gPadEmuSettings = gGlobalGameCfg.pademu_settings;
     gPadMacroSettings = gGlobalGameCfg.padmacro_settings;
 
