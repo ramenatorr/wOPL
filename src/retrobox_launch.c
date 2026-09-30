@@ -3,6 +3,7 @@
 // file does nothing and wOPL behaves like stock.
 #include <fcntl.h> // before ps2ips.h: tcpip.h's fallback O_NONBLOCK must not win over newlib's
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -43,10 +44,36 @@ static clock_t rbLastPollEnd; // when the last poll finished
 static int rbPollDelay;       // ms to the next poll: rbPollDelayMs(last exchange ok)
 static clock_t rbJobAt;       // when rbJob arrived
 
+// retrobox diagnostics (2026-09-30 sitting): a step trace rewritten to <share>retrobox.log, first ~3 KB only.
+static char rbTraceBuf[3072];
+static int rbTraceLen;
+static char rbTracePath[64];
+
+static void rbTrace(const char *fmt, ...)
+{
+    va_list ap;
+    int n, fd;
+
+    if (!rbTracePath[0] || rbTraceLen > (int)sizeof(rbTraceBuf) - 200)
+        return;
+    n = snprintf(rbTraceBuf + rbTraceLen, sizeof(rbTraceBuf) - rbTraceLen, "%lu ", (unsigned long)(clock() / 1000));
+    rbTraceLen += n;
+    va_start(ap, fmt);
+    n = vsnprintf(rbTraceBuf + rbTraceLen, sizeof(rbTraceBuf) - rbTraceLen - 1, fmt, ap);
+    va_end(ap);
+    rbTraceLen += n;
+    rbTraceBuf[rbTraceLen++] = '\n';
+    if ((fd = open(rbTracePath, O_WRONLY | O_CREAT | O_TRUNC, 0666)) >= 0) {
+        write(fd, rbTraceBuf, rbTraceLen);
+        close(fd);
+    }
+}
+
 static int rbWait(int s, int forWrite, int ms)
 {
     fd_set set;
     struct timeval tv;
+    int n;
 
     if (ms <= 0)
         return 0;
@@ -54,7 +81,9 @@ static int rbWait(int s, int forWrite, int ms)
     FD_SET(s, &set);
     tv.tv_sec = ms / 1000;
     tv.tv_usec = (ms % 1000) * 1000;
-    return select(s + 1, forWrite ? NULL : &set, forWrite ? &set : NULL, NULL, &tv);
+    n = select(s + 1, forWrite ? NULL : &set, forWrite ? &set : NULL, NULL, &tv);
+    rbTrace("select s=%d write=%d ms=%d -> %d errno=%d", s, forWrite, ms, n, errno);
+    return n;
 }
 
 static int rbMsLeft(clock_t start)
@@ -69,15 +98,21 @@ static int rbExchange(const char *req, char *resp, int respLen)
     clock_t start = clock();
     int s, n, sent = 0, got = 0, len = strlen(req);
 
-    if ((s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
+    s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    rbTrace("socket -> %d errno=%d", s, errno);
+    if (s < 0)
         return -1;
-    fcntl(s, F_SETFL, O_NONBLOCK);
-    if (connect(s, (struct sockaddr *)&rbAddr, sizeof(rbAddr)) < 0 && rbWait(s, 1, RB_CONNECT_MS) <= 0)
+    n = fcntl(s, F_SETFL, O_NONBLOCK);
+    rbTrace("fcntl O_NONBLOCK(%d) -> %d errno=%d", O_NONBLOCK, n, errno);
+    n = connect(s, (struct sockaddr *)&rbAddr, sizeof(rbAddr));
+    rbTrace("connect %s -> %d errno=%d", rbHost, n, errno);
+    if (n < 0 && rbWait(s, 1, RB_CONNECT_MS) <= 0)
         goto fail;
     while (sent < len) {
         // A refused connection (RST) reads writable and every send then fails: give up at once, never spin to the
         // deadline. A fresh socket's ~100-byte request always fits the send buffer.
         n = send(s, req + sent, len - sent, 0);
+        rbTrace("send %d -> %d errno=%d", len - sent, n, errno);
         if (n <= 0)
             goto fail;
         sent += n;
@@ -86,6 +121,7 @@ static int rbExchange(const char *req, char *resp, int respLen)
         if (rbWait(s, 0, rbMsLeft(start)) <= 0)
             goto fail;
         n = recv(s, resp + got, respLen - 1 - got, 0);
+        rbTrace("recv -> %d errno=%d", n, errno);
         if (n == 0)
             break;
         if (n < 0)
@@ -124,6 +160,7 @@ static void rbPoll(void)
         }
     }
     // The next poll counts from the end of this one, and backs off while the brain does not answer.
+    rbTrace("poll games=%d ok=%d job=%d", rbPollGames, ok, rbJobReady);
     rbPollDelay = rbPollDelayMs(ok);
     rbLastPollEnd = clock();
     rbPolledOnce = 1;
@@ -137,15 +174,21 @@ void retroboxInit(const char *prefix)
     int fd, n;
 
     rbEnabled = 0;
+    snprintf(rbTracePath, sizeof(rbTracePath), "%sretrobox.log", prefix);
     snprintf(path, sizeof(path), "%sretrobox.cfg", prefix);
-    if ((fd = open(path, O_RDONLY, 0666)) < 0)
+    fd = open(path, O_RDONLY, 0666);
+    rbTrace("init open %s -> %d errno=%d", path, fd, errno);
+    if (fd < 0)
         return;
     n = read(fd, text, sizeof(text) - 1);
     close(fd);
+    rbTrace("read -> %d", n);
     if (n <= 0)
         return;
     text[n] = '\0';
-    if (rbParseConfig(text, &addr) != 0)
+    n = rbParseConfig(text, &addr);
+    rbTrace("parse -> %d ip=%s port=%d", n, n == 0 ? addr.ip : "-", n == 0 ? addr.port : 0);
+    if (n != 0)
         return;
     memset(&rbAddr, 0, sizeof(rbAddr));
     rbAddr.sin_len = sizeof(rbAddr);
