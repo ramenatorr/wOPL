@@ -38,6 +38,11 @@ _Static_assert(RB_MEDIA_DVD == SCECdPS2DVD, "retrobox media DVD");
 
 #define RB_POLL_STEP_US 10000 // 10 ms between socket polls
 
+// After a whole reply, how long to wait for the server's close before closing ours. The side that closes first keeps
+// the connection in TIME_WAIT (~2 min on lwIP); the IOP only has a handful of TCP slots, and closing first ran it out
+// after 4 exchanges on the 2026-09-30 console trace. HTTP/1.0 servers close right after the reply.
+#define RB_FIN_WAIT_MS 500
+
 static int rbEnabled;
 static struct sockaddr_in rbAddr;
 static char rbHost[24];            // "a.b.c.d:port" for the Host header
@@ -96,7 +101,7 @@ static int rbMsLeft(clock_t start)
 static int rbExchange(const char *req, char *resp, int respLen)
 {
     clock_t start = clock();
-    int s, n, sent = 0, got = 0, len = strlen(req);
+    int s, n, sent = 0, got = 0, len = strlen(req), complete = 0, fin = 0;
 
     s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     rbTrace("socket -> %d", s);
@@ -124,12 +129,16 @@ static int rbExchange(const char *req, char *resp, int respLen)
         if (n > 0) {
             got += n;
             resp[got] = '\0';
-            if (rbResponseComplete(resp, got))
+            if (rbResponseComplete(resp, got)) {
+                complete = 1;
                 break;
+            }
             continue;
         }
-        if (n == 0)
-            break; // the server closed
+        if (n == 0) {
+            fin = 1; // the server closed
+            break;
+        }
         if (rbMsLeft(start) <= 0) {
             rbTrace("recv: %d bytes by the %d ms deadline", got, RB_TOTAL_MS);
             goto fail;
@@ -137,7 +146,21 @@ static int rbExchange(const char *req, char *resp, int respLen)
         DelayThread(RB_POLL_STEP_US);
     }
     resp[got] = '\0';
-    rbTrace("exchange ok: sent %d, got %d in %lu ms", sent, got, rbElapsedMs(start, clock(), CLOCKS_PER_SEC));
+    if (complete) {
+        clock_t waitFrom = clock();
+        char c;
+        while (rbElapsedMs(waitFrom, clock(), CLOCKS_PER_SEC) < RB_FIN_WAIT_MS) {
+            n = recv(s, &c, 1, 0);
+            if (n == 0) {
+                fin = 1;
+                break;
+            }
+            if (n < 0)
+                DelayThread(RB_POLL_STEP_US);
+        }
+    }
+    rbTrace("exchange ok: sent %d, got %d in %lu ms, server closed first %d", sent, got,
+            rbElapsedMs(start, clock(), CLOCKS_PER_SEC), fin);
     close(s);
     return got;
 fail:
