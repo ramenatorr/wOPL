@@ -193,10 +193,10 @@ int rbFormatRequest(char *buf, int len, const char *method, const char *path, co
     int n;
 
     if (body)
-        n = snprintf(buf, len, "%s %s HTTP/1.0\r\nHost: %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
+        n = snprintf(buf, len, "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
                      method, path, host, (int)strlen(body), body);
     else
-        n = snprintf(buf, len, "%s %s HTTP/1.0\r\nHost: %s\r\n\r\n", method, path, host);
+        n = snprintf(buf, len, "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\n\r\n", method, path, host);
     return (n < 0 || n >= len) ? -1 : n;
 }
 

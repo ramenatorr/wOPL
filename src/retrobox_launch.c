@@ -38,10 +38,6 @@ _Static_assert(RB_MEDIA_DVD == SCECdPS2DVD, "retrobox media DVD");
 
 #define RB_POLL_STEP_US 10000 // 10 ms between socket polls
 
-// After a whole reply, how long to wait for the server's close before closing ours. The side that closes first keeps
-// the connection in TIME_WAIT (~2 min on lwIP); the IOP only has a handful of TCP slots, and closing first ran it out
-// after 4 exchanges on the 2026-09-30 console trace. HTTP/1.0 servers close right after the reply.
-#define RB_FIN_WAIT_MS 500
 
 static int rbEnabled;
 static struct sockaddr_in rbAddr;
@@ -94,78 +90,111 @@ static int rbMsLeft(clock_t start)
     return spent >= RB_TOTAL_MS ? 0 : (int)(RB_TOTAL_MS - spent);
 }
 
-// One HTTP/1.0 exchange. Returns the bytes read, or -1. No select(): it hung the IO thread on the console
-// (2026-09-30, waiting for the server's close after a whole reply), and ps2ips reports every socket error as -23 so
-// EINPROGRESS/EWOULDBLOCK cannot be told apart from a failure. Instead every step polls the non-blocking socket every
-// RB_POLL_STEP_US, bounded by the connect and total deadlines, and the read stops once the reply is whole.
-static int rbExchange(const char *req, char *resp, int respLen)
+// One connection for every exchange (HTTP/1.1 keep-alive). The IOP runs out of client sockets after ~4 connections
+// and a closed one stays unusable for 30 s+ whoever closes first (console trace 2026-09-30), so a fresh connection
+// per poll cannot last. Used by the IO thread (boot report, polls) and the GUI thread (claim/error), never at once:
+// the GUI thread only reports once a poll has finished.
+static int rbSock = -1;
+
+static void rbDisconnect(void)
+{
+    if (rbSock >= 0) {
+        close(rbSock);
+        rbSock = -1;
+    }
+}
+
+// An idle keep-alive connection the server has closed (uvicorn: after 5 s idle) reads EOF; anything else counts as
+// alive (ps2ips reports "nothing to read" and real errors alike as -23; a dead one then fails and is replaced).
+static int rbReusable(void)
+{
+    char c;
+
+    if (rbSock < 0)
+        return 0;
+    if (recv(rbSock, &c, 1, 0) == 0) {
+        rbDisconnect();
+        return 0;
+    }
+    return 1;
+}
+
+static int rbConnect(void)
+{
+    int n;
+
+    rbSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    rbTrace("socket -> %d", rbSock);
+    if (rbSock < 0)
+        return -1;
+    fcntl(rbSock, F_SETFL, RB_LWIP_O_NONBLOCK);
+    n = connect(rbSock, (struct sockaddr *)&rbAddr, sizeof(rbAddr));
+    rbTrace("connect %s -> %d", rbHost, n);
+    return 0;
+}
+
+// Send req and read one whole reply on rbSock. No select(): it hung the IO thread on the console (2026-09-30), and
+// ps2ips reports every socket error as -23, so each step polls the non-blocking socket every RB_POLL_STEP_US within
+// the deadlines. fresh: the connection is new, so a failing send may still be the handshake in progress.
+static int rbExchangeOn(const char *req, char *resp, int respLen, int fresh)
 {
     clock_t start = clock();
-    int s, n, sent = 0, got = 0, len = strlen(req), complete = 0, fin = 0;
+    int n, sent = 0, got = 0, len = strlen(req);
 
-    s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    rbTrace("socket -> %d", s);
-    if (s < 0)
-        return -1;
-    n = fcntl(s, F_SETFL, RB_LWIP_O_NONBLOCK);
-    n = connect(s, (struct sockaddr *)&rbAddr, sizeof(rbAddr));
-    rbTrace("connect %s -> %d", rbHost, n);
-    // A send succeeds once the handshake is done (lwIP may also queue it during SYN_SENT; the read deadline then
-    // covers a connection that never comes up).
     while (sent < len) {
-        n = send(s, req + sent, len - sent, 0);
+        n = send(rbSock, req + sent, len - sent, 0);
         if (n > 0) {
             sent += n;
             continue;
         }
-        if (rbElapsedMs(start, clock(), CLOCKS_PER_SEC) >= RB_CONNECT_MS) {
-            rbTrace("send: no connection within %d ms", RB_CONNECT_MS);
-            goto fail;
+        if (!fresh || rbElapsedMs(start, clock(), CLOCKS_PER_SEC) >= RB_CONNECT_MS) {
+            rbTrace("send failed (%s connection)", fresh ? "new" : "reused");
+            return -1;
         }
         DelayThread(RB_POLL_STEP_US);
     }
     while (got < respLen - 1) {
-        n = recv(s, resp + got, respLen - 1 - got, 0);
+        n = recv(rbSock, resp + got, respLen - 1 - got, 0);
         if (n > 0) {
             got += n;
             resp[got] = '\0';
             if (rbResponseComplete(resp, got)) {
-                complete = 1;
-                break;
+                rbTrace("exchange ok (%s): sent %d, got %d in %lu ms", fresh ? "new" : "reused", sent, got,
+                        rbElapsedMs(start, clock(), CLOCKS_PER_SEC));
+                return got;
             }
             continue;
         }
         if (n == 0) {
-            fin = 1; // the server closed
-            break;
+            rbTrace("closed by the server after %d bytes", got);
+            return -1;
         }
         if (rbMsLeft(start) <= 0) {
             rbTrace("recv: %d bytes by the %d ms deadline", got, RB_TOTAL_MS);
-            goto fail;
+            return -1;
         }
         DelayThread(RB_POLL_STEP_US);
     }
-    resp[got] = '\0';
-    if (complete) {
-        clock_t waitFrom = clock();
-        char c;
-        while (rbElapsedMs(waitFrom, clock(), CLOCKS_PER_SEC) < RB_FIN_WAIT_MS) {
-            n = recv(s, &c, 1, 0);
-            if (n == 0) {
-                fin = 1;
-                break;
-            }
-            if (n < 0)
-                DelayThread(RB_POLL_STEP_US);
+    return -1; // reply larger than the buffer
+}
+
+// Returns the bytes read, or -1. A reused connection that fails is replaced once.
+static int rbExchange(const char *req, char *resp, int respLen)
+{
+    int reused = rbReusable(), got;
+
+    if (!reused && rbConnect() < 0)
+        return -1;
+    got = rbExchangeOn(req, resp, respLen, !reused);
+    if (got < 0) {
+        rbDisconnect();
+        if (reused && rbConnect() == 0) {
+            got = rbExchangeOn(req, resp, respLen, 1);
+            if (got < 0)
+                rbDisconnect();
         }
     }
-    rbTrace("exchange ok: sent %d, got %d in %lu ms, server closed first %d", sent, got,
-            rbElapsedMs(start, clock(), CLOCKS_PER_SEC), fin);
-    close(s);
     return got;
-fail:
-    close(s);
-    return -1;
 }
 
 static void rbPost(const char *path, const char *body)
@@ -206,6 +235,7 @@ void retroboxInit(const char *prefix)
     int fd, n;
 
     rbEnabled = 0;
+    rbSock = -1; // an SMB re-init: any old connection went with the old network session
     rbTraceOn = 0;
     rbTraceLen = 0;
     snprintf(rbTracePath, sizeof(rbTracePath), "%sretrobox.log", prefix);
@@ -288,6 +318,7 @@ static void rbActOnJob(void)
     }
     snprintf(body, sizeof(body), "job=%s\n", rbJob.id);
     rbPost("/opl/claimed", body); // before the launch: it tears the network down
+    rbDisconnect();
     menuSetSelectedItem(&mod->menuItem);
     // Exactly as the autostart firing (menuHandleInputMain): per-game config, VMCs and compat modes all apply.
     // Returns only if the launch did not happen (a declined VMC prompt, an error box); polling then resumes.

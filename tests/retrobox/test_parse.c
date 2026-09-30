@@ -103,9 +103,11 @@ static void testRequest(void)
 {
     char buf[256];
     CHECK(rbFormatRequest(buf, sizeof(buf), "GET", "/opl/next?games=1756", "192.168.1.20:8000", NULL) > 0);
-    CHECK(strcmp(buf, "GET /opl/next?games=1756 HTTP/1.0\r\nHost: 192.168.1.20:8000\r\n\r\n") == 0);
+    // HTTP/1.1 keep-alive: the IOP runs out of client sockets after ~4 connections (closed ones stay unusable for
+    // 30 s+, whoever closes first), so every exchange reuses one connection (console trace 2026-09-30).
+    CHECK(strcmp(buf, "GET /opl/next?games=1756 HTTP/1.1\r\nHost: 192.168.1.20:8000\r\nConnection: keep-alive\r\n\r\n") == 0);
     CHECK(rbFormatRequest(buf, sizeof(buf), "POST", "/opl/claimed", "h:1", "job=a\n") > 0);
-    CHECK(strcmp(buf, "POST /opl/claimed HTTP/1.0\r\nHost: h:1\r\nContent-Type: text/plain\r\n"
+    CHECK(strcmp(buf, "POST /opl/claimed HTTP/1.1\r\nHost: h:1\r\nConnection: keep-alive\r\nContent-Type: text/plain\r\n"
                       "Content-Length: 6\r\n\r\njob=a\n") == 0);
     CHECK(rbFormatRequest(buf, 16, "GET", "/opl/next?games=1756", "h:1", NULL) == -1); // too small
 }
