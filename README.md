@@ -172,6 +172,27 @@ main9: {
 | `color`   | Text colour, defaults to `ui_text_color`                                                     |
 | `font`    | Font slot (`font1`..) to use instead of the default font                                     |
 
+### Launch requests over HTTP (retrobox)
+
+wOPL can take launch requests from a server on the LAN (the retrobox brain). Put a file `retrobox.cfg` in the root of the SMB share with one line:
+
+```
+brain = 192.168.1.20:8000
+```
+
+(an IPv4 address and port; `#` comments allowed). With no `retrobox.cfg`, or an invalid one, nothing changes.
+
+After the share connects, wOPL posts `name=smb_connected` to `POST /opl/event`. While the main games list is on screen and the network list is fully loaded, it asks `GET /opl/next?games=<count>` about every 2 s. The server answers `204` (nothing to do) or `200` with `key=value` lines `job=`, `name=` (the display name, exact) and `media=` (`CD` or `DVD`, the share folder). wOPL looks the game up by exact name and folder and:
+
+- one match: posts `job=` to `POST /opl/claimed` and runs the normal Cross launch (per-game settings, VMCs and compatibility modes apply as usual);
+- no match or several: posts `job=` and `reason=not_found` / `reason=ambiguous` to `POST /opl/error` and stays on the list.
+
+Every request has a 1 s connect and 2 s total limit; a server that does not answer is ignored until the next poll. The parser has host tests:
+
+```
+cc -std=c99 -Wall -Werror -I. -o /tmp/rb_parse_test tests/retrobox/test_parse.c src/retrobox_parse.c && /tmp/rb_parse_test
+```
+
 <img src="previews/uOPL.png" height="300" />
 <img src="previews/uOPL-CF.png" height="300" />
 

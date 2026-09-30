@@ -33,6 +33,7 @@
 #define ETH_MODE_UPDATE_DELAY 300
 
 #include "include/mcemu.h"
+#include "include/retrobox_launch.h"
 typedef struct
 {
     int active;       /* Activation flag */
@@ -339,6 +340,8 @@ static void ethInitSMB(void)
 
         guiSetBootStatusIfActive("Checking network folders...");
         sbCreateFolders(ethPrefix, 1);
+        // retrobox: read retrobox.cfg and tell the brain SMB is up (HTTP launch, retrobox_launch.c)
+        retroboxInit(ethPrefix);
     } else if (gPCShareName[0] || !(gNetworkStartup >= ERROR_ETH_SMB_OPENSHARE))
         ethDisplayErrorStatus();
 }

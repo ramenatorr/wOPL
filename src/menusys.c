@@ -19,6 +19,7 @@
 #include "include/system.h"
 #include "include/themes.h"
 #include "include/config_wopl.h"
+#include "include/retrobox_launch.h"
 #include <assert.h>
 
 #include <kernel.h>
@@ -1232,6 +1233,9 @@ void menuHandleInputMain()
         else
             selected_item->item->execCross(selected_item->item);
     }
+
+    // retrobox: poll the brain for a launch / act on one (main list screen only; retrobox_launch.c)
+    retroboxTick();
 }
 
 void menuRenderInfo(void)

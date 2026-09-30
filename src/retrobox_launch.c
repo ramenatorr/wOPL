@@ -1,0 +1,228 @@
+// retrobox: wOPL asks the retrobox brain what to launch (retro-gaming-box-poc
+// docs/superpowers/specs/2026-09-30-ps2-opl-http-launch-design.md). With no valid retrobox.cfg on the share this
+// file does nothing and wOPL behaves like stock.
+#include <fcntl.h> // before ps2ips.h: tcpip.h's fallback O_NONBLOCK must not win over newlib's
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/time.h>
+#include <sys/select.h>
+#include <ps2ips.h>
+#include <arpa/inet.h>
+#include <libcdvd-common.h>
+
+#include "include/common.h"
+#include "include/ioman.h"
+#include "include/gui.h"
+#include "include/menusys.h"
+#include "include/module.h"
+#include "include/pad.h"
+#include "include/supportbase.h"
+#include "include/ethsupport.h"
+#include "include/retrobox_parse.h"
+#include "include/retrobox_launch.h"
+
+_Static_assert(RB_MEDIA_CD == SCECdPS2CD, "retrobox media CD");
+_Static_assert(RB_MEDIA_DVD == SCECdPS2DVD, "retrobox media DVD");
+
+#define RB_CONNECT_MS 1000
+
+#define RB_TOTAL_MS 2000
+
+#define RB_POLL_EVERY_S 2
+
+static int rbEnabled;
+static struct sockaddr_in rbAddr;
+static char rbHost[24];            // "a.b.c.d:port" for the Host header
+static volatile int rbPollPending; // a poll is queued or running on the IO thread
+static volatile int rbJobReady;    // rbJob holds a job for the GUI thread
+static rb_job_t rbJob;
+static int rbPollGames;
+static clock_t rbNextPoll;
+
+static int rbWait(int s, int forWrite, int ms)
+{
+    fd_set set;
+    struct timeval tv;
+
+    if (ms <= 0)
+        return 0;
+    FD_ZERO(&set);
+    FD_SET(s, &set);
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    return select(s + 1, forWrite ? NULL : &set, forWrite ? &set : NULL, NULL, &tv);
+}
+
+static int rbMsLeft(clock_t deadline)
+{
+    clock_t now = clock();
+    return now >= deadline ? 0 : (int)(((deadline - now) * 1000) / CLOCKS_PER_SEC);
+}
+
+// One HTTP/1.0 exchange; the server closes the connection after its reply. Returns the bytes read, or -1.
+static int rbExchange(const char *req, char *resp, int respLen)
+{
+    clock_t deadline = clock() + (RB_TOTAL_MS * CLOCKS_PER_SEC) / 1000;
+    int s, n, sent = 0, got = 0, len = strlen(req);
+
+    if ((s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
+        return -1;
+    fcntl(s, F_SETFL, O_NONBLOCK);
+    if (connect(s, (struct sockaddr *)&rbAddr, sizeof(rbAddr)) < 0 && rbWait(s, 1, RB_CONNECT_MS) <= 0)
+        goto fail;
+    while (sent < len) {
+        n = send(s, req + sent, len - sent, 0);
+        if (n > 0)
+            sent += n;
+        else if (rbWait(s, 1, rbMsLeft(deadline)) <= 0)
+            goto fail;
+    }
+    while (got < respLen - 1) {
+        if (rbWait(s, 0, rbMsLeft(deadline)) <= 0)
+            goto fail;
+        n = recv(s, resp + got, respLen - 1 - got, 0);
+        if (n == 0)
+            break;
+        if (n < 0)
+            goto fail;
+        got += n;
+    }
+    resp[got] = '\0';
+    close(s);
+    return got;
+fail:
+    close(s);
+    return -1;
+}
+
+static void rbPost(const char *path, const char *body)
+{
+    char req[512], resp[256];
+
+    if (rbFormatRequest(req, sizeof(req), "POST", path, rbHost, body) > 0)
+        rbExchange(req, resp, sizeof(resp));
+}
+
+static void rbPoll(void)
+{
+    char path[48], req[256], resp[1024];
+    rb_job_t job;
+
+    snprintf(path, sizeof(path), "/opl/next?games=%d", rbPollGames);
+    if (rbFormatRequest(req, sizeof(req), "GET", path, rbHost, NULL) > 0 && rbExchange(req, resp, sizeof(resp)) > 0 &&
+        rbParseStatus(resp) == 200 && rbParseJob(resp, &job) == 0) {
+        rbJob = job;
+        rbJobReady = 1;
+    }
+    rbPollPending = 0;
+}
+
+void retroboxInit(const char *prefix)
+{
+    char path[64], text[256];
+    rb_addr_t addr;
+    int fd, n;
+
+    rbEnabled = 0;
+    snprintf(path, sizeof(path), "%sretrobox.cfg", prefix);
+    if ((fd = open(path, O_RDONLY, 0666)) < 0)
+        return;
+    n = read(fd, text, sizeof(text) - 1);
+    close(fd);
+    if (n <= 0)
+        return;
+    text[n] = '\0';
+    if (rbParseConfig(text, &addr) != 0)
+        return;
+    memset(&rbAddr, 0, sizeof(rbAddr));
+    rbAddr.sin_len = sizeof(rbAddr);
+    rbAddr.sin_family = AF_INET;
+    rbAddr.sin_port = htons(addr.port);
+    rbAddr.sin_addr.s_addr = inet_addr(addr.ip);
+    snprintf(rbHost, sizeof(rbHost), "%s:%d", addr.ip, addr.port);
+    rbEnabled = 1;
+    LOG("RETROBOX brain %s\n", rbHost);
+    rbPost("/opl/event", "name=smb_connected\n");
+}
+
+// The ItemCounter's "list loaded" test (themes.c drawItemCounter) for the ETH list: its node count, or 0.
+static int rbEthLoadedCount(void)
+{
+    item_list_t *support = list_support[ETH_MODE].support;
+    submenu_list_t *node;
+    int count, total = 0;
+
+    if (!support || !support->enabled || gNetworkStartup != 0)
+        return 0;
+    count = support->itemGetCount(support);
+    if (count <= 0)
+        return 0;
+    for (node = list_support[ETH_MODE].menuItem.submenu; node; node = node->next)
+        total++;
+    return total == count ? count : 0;
+}
+
+static void rbActOnJob(void)
+{
+    opl_io_module_t *mod = &list_support[ETH_MODE];
+    item_list_t *support = mod->support;
+    submenu_list_t *node, *hit = NULL;
+    int hits = 0;
+    char body[96];
+
+    guiLock(); // the IO thread clears the list under this lock (menuClearGameList)
+    for (node = mod->menuItem.submenu; node; node = node->next) {
+        base_game_info_t *game = (base_game_info_t *)support->itemGet(support, node->item.id);
+        if (game && game->media == rbJob.media && strcmp(game->name, rbJob.name) == 0) {
+            hit = node;
+            hits++;
+        }
+    }
+    if (hits == 1) {
+        mod->menuItem.current = hit;
+        mod->menuItem.pagestart = hit;
+    }
+    guiUnlock();
+
+    if (hits != 1) {
+        snprintf(body, sizeof(body), "job=%s\nreason=%s\n", rbJob.id, hits ? "ambiguous" : "not_found");
+        rbPost("/opl/error", body);
+        return;
+    }
+    snprintf(body, sizeof(body), "job=%s\n", rbJob.id);
+    rbPost("/opl/claimed", body); // before the launch: it tears the network down
+    menuSetSelectedItem(&mod->menuItem);
+    // Exactly as the autostart firing (menuHandleInputMain): per-game config, VMCs and compat modes all apply.
+    // Returns only if the launch did not happen (a declined VMC prompt, an error box); polling then resumes.
+    if (gSelectButton == KEY_CIRCLE)
+        mod->menuItem.execCircle(&mod->menuItem);
+    else
+        mod->menuItem.execCross(&mod->menuItem);
+}
+
+void retroboxTick(void)
+{
+    int count;
+
+    if (!rbEnabled)
+        return;
+    if (rbJobReady) {
+        if (rbEthLoadedCount() > 0) {
+            rbJobReady = 0;
+            rbActOnJob();
+        }
+        return;
+    }
+    if (rbPollPending || clock() < rbNextPoll)
+        return;
+    if ((count = rbEthLoadedCount()) <= 0)
+        return;
+    rbNextPoll = clock() + RB_POLL_EVERY_S * CLOCKS_PER_SEC;
+    rbPollGames = count;
+    rbPollPending = 1;
+    if (ioPutRequest(IO_CUSTOM_SIMPLEACTION, &rbPoll) < 0)
+        rbPollPending = 0;
+}
