@@ -187,7 +187,7 @@ After the share connects, wOPL posts `name=smb_connected` to `POST /opl/event`. 
 - one match: posts `job=` to `POST /opl/claimed` and runs the normal Cross launch (per-game settings, VMCs and compatibility modes apply as usual);
 - no match or several: posts `job=` and `reason=not_found` / `reason=ambiguous` to `POST /opl/error` and stays on the list.
 
-Every request has a 1 s connect and 2 s total limit; a server that does not answer is ignored until the next poll. The parser has host tests:
+Every request has a 1 s connect and 2 s total limit; after a request the server does not answer, the next poll waits 10 s instead of 2 s. A job that cannot be acted on within 10 s (the list is refreshing, another screen is open) is dropped without a claim, so a launch never starts after the server has given up on it (it waits 15 s). The parser has host tests:
 
 ```
 cc -std=c99 -Wall -Werror -I. -o /tmp/rb_parse_test tests/retrobox/test_parse.c src/retrobox_parse.c && /tmp/rb_parse_test

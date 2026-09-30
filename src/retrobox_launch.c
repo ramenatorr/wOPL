@@ -31,8 +31,6 @@ _Static_assert(RB_MEDIA_DVD == SCECdPS2DVD, "retrobox media DVD");
 
 #define RB_TOTAL_MS 2000
 
-#define RB_POLL_EVERY_S 2
-
 static int rbEnabled;
 static struct sockaddr_in rbAddr;
 static char rbHost[24];            // "a.b.c.d:port" for the Host header
@@ -40,7 +38,10 @@ static volatile int rbPollPending; // a poll is queued or running on the IO thre
 static volatile int rbJobReady;    // rbJob holds a job for the GUI thread
 static rb_job_t rbJob;
 static int rbPollGames;
-static clock_t rbNextPoll;
+static int rbPolledOnce;
+static clock_t rbLastPollEnd; // when the last poll finished
+static int rbPollDelay;       // ms to the next poll: rbPollDelayMs(last exchange ok)
+static clock_t rbJobAt;       // when rbJob arrived
 
 static int rbWait(int s, int forWrite, int ms)
 {
@@ -56,16 +57,16 @@ static int rbWait(int s, int forWrite, int ms)
     return select(s + 1, forWrite ? NULL : &set, forWrite ? &set : NULL, NULL, &tv);
 }
 
-static int rbMsLeft(clock_t deadline)
+static int rbMsLeft(clock_t start)
 {
-    clock_t now = clock();
-    return now >= deadline ? 0 : (int)(((deadline - now) * 1000) / CLOCKS_PER_SEC);
+    unsigned long spent = rbElapsedMs(start, clock(), CLOCKS_PER_SEC);
+    return spent >= RB_TOTAL_MS ? 0 : (int)(RB_TOTAL_MS - spent);
 }
 
 // One HTTP/1.0 exchange; the server closes the connection after its reply. Returns the bytes read, or -1.
 static int rbExchange(const char *req, char *resp, int respLen)
 {
-    clock_t deadline = clock() + (RB_TOTAL_MS * CLOCKS_PER_SEC) / 1000;
+    clock_t start = clock();
     int s, n, sent = 0, got = 0, len = strlen(req);
 
     if ((s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
@@ -74,14 +75,15 @@ static int rbExchange(const char *req, char *resp, int respLen)
     if (connect(s, (struct sockaddr *)&rbAddr, sizeof(rbAddr)) < 0 && rbWait(s, 1, RB_CONNECT_MS) <= 0)
         goto fail;
     while (sent < len) {
+        // A refused connection (RST) reads writable and every send then fails: give up at once, never spin to the
+        // deadline. A fresh socket's ~100-byte request always fits the send buffer.
         n = send(s, req + sent, len - sent, 0);
-        if (n > 0)
-            sent += n;
-        else if (rbWait(s, 1, rbMsLeft(deadline)) <= 0)
+        if (n <= 0)
             goto fail;
+        sent += n;
     }
     while (got < respLen - 1) {
-        if (rbWait(s, 0, rbMsLeft(deadline)) <= 0)
+        if (rbWait(s, 0, rbMsLeft(start)) <= 0)
             goto fail;
         n = recv(s, resp + got, respLen - 1 - got, 0);
         if (n == 0)
@@ -110,13 +112,21 @@ static void rbPoll(void)
 {
     char path[48], req[256], resp[1024];
     rb_job_t job;
+    int ok = 0;
 
     snprintf(path, sizeof(path), "/opl/next?games=%d", rbPollGames);
-    if (rbFormatRequest(req, sizeof(req), "GET", path, rbHost, NULL) > 0 && rbExchange(req, resp, sizeof(resp)) > 0 &&
-        rbParseStatus(resp) == 200 && rbParseJob(resp, &job) == 0) {
-        rbJob = job;
-        rbJobReady = 1;
+    if (rbFormatRequest(req, sizeof(req), "GET", path, rbHost, NULL) > 0 && rbExchange(req, resp, sizeof(resp)) > 0) {
+        ok = 1;
+        if (rbParseStatus(resp) == 200 && rbParseJob(resp, &job) == 0) {
+            rbJob = job;
+            rbJobAt = clock();
+            rbJobReady = 1;
+        }
     }
+    // The next poll counts from the end of this one, and backs off while the brain does not answer.
+    rbPollDelay = rbPollDelayMs(ok);
+    rbLastPollEnd = clock();
+    rbPolledOnce = 1;
     rbPollPending = 0;
 }
 
@@ -160,8 +170,10 @@ static int rbEthLoadedCount(void)
     count = support->itemGetCount(support);
     if (count <= 0)
         return 0;
+    guiLock(); // the IO thread frees these nodes under this lock on a list refresh (menuClearGameList)
     for (node = list_support[ETH_MODE].menuItem.submenu; node; node = node->next)
         total++;
+    guiUnlock();
     return total == count ? count : 0;
 }
 
@@ -210,17 +222,18 @@ void retroboxTick(void)
     if (!rbEnabled)
         return;
     if (rbJobReady) {
-        if (rbEthLoadedCount() > 0) {
+        if (!rbJobFresh(rbElapsedMs(rbJobAt, clock(), CLOCKS_PER_SEC))) {
+            rbJobReady = 0; // the brain has given up on it by now: never launch late, never claim
+        } else if (rbEthLoadedCount() > 0) {
             rbJobReady = 0;
             rbActOnJob();
         }
         return;
     }
-    if (rbPollPending || clock() < rbNextPoll)
+    if (rbPollPending || (rbPolledOnce && rbElapsedMs(rbLastPollEnd, clock(), CLOCKS_PER_SEC) < (unsigned long)rbPollDelay))
         return;
     if ((count = rbEthLoadedCount()) <= 0)
         return;
-    rbNextPoll = clock() + RB_POLL_EVERY_S * CLOCKS_PER_SEC;
     rbPollGames = count;
     rbPollPending = 1;
     if (ioPutRequest(IO_CUSTOM_SIMPLEACTION, &rbPoll) < 0)

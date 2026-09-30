@@ -78,12 +78,28 @@ static void testRequest(void)
     CHECK(rbFormatRequest(buf, 16, "GET", "/opl/next?games=1756", "h:1", NULL) == -1); // too small
 }
 
+static void testTiming(void)
+{
+    // PS2SDK: CLOCKS_PER_SEC 1000000, 32-bit unsigned clock_t (wraps every ~71.6 min)
+    CHECK(rbElapsedMs(1000000UL, 3500000UL, 1000000UL) == 2500);
+    CHECK(rbElapsedMs(0xFFFFFFFFUL - 999999UL, 1000000UL, 1000000UL) == 2000); // across the 32-bit wrap
+    CHECK(rbElapsedMs(5, 5, 1000000UL) == 0);
+    CHECK(rbElapsedMs(0, 4000000000UL, 1000000UL) == 4000000UL); // no overflow in the ms conversion
+    CHECK(rbPollDelayMs(1) == 2000);
+    CHECK(rbPollDelayMs(0) == 10000);
+    CHECK(rbJobFresh(0) == 1);
+    CHECK(rbJobFresh(RB_JOB_MAX_AGE_MS) == 1);
+    CHECK(rbJobFresh(RB_JOB_MAX_AGE_MS + 1) == 0);
+    CHECK(RB_JOB_MAX_AGE_MS < 15000); // must expire before the brain's wait_for_opl gives up
+}
+
 int main(void)
 {
     testConfig();
     testStatus();
     testJob();
     testRequest();
+    testTiming();
     printf(failures ? "%d FAILED\n" : "all passed\n", failures);
     return failures != 0;
 }

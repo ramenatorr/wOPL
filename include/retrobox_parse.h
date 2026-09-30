@@ -12,6 +12,12 @@
 
 #define RB_NAME_MAX 160 // ISO_GAME_NAME_MAX
 
+#define RB_POLL_EVERY_MS 2000
+
+#define RB_POLL_BACKOFF_MS 10000 // after a failed exchange: a brain that is down is not hammered
+
+#define RB_JOB_MAX_AGE_MS 10000 // a job not acted on by then is dropped: the brain gives up at 15 s
+
 typedef struct
 {
     char ip[16];
@@ -28,6 +34,9 @@ typedef struct
 int rbParseConfig(const char *text, rb_addr_t *out);
 int rbParseStatus(const char *resp);
 int rbParseJob(const char *resp, rb_job_t *job);
+unsigned long rbElapsedMs(unsigned long start, unsigned long now, unsigned long perSec);
+int rbPollDelayMs(int lastExchangeOk);
+int rbJobFresh(unsigned long ageMs);
 int rbFormatRequest(char *buf, int len, const char *method, const char *path, const char *host, const char *body);
 
 #endif

@@ -166,3 +166,21 @@ int rbFormatRequest(char *buf, int len, const char *method, const char *path, co
         n = snprintf(buf, len, "%s %s HTTP/1.0\r\nHost: %s\r\n\r\n", method, path, host);
     return (n < 0 || n >= len) ? -1 : n;
 }
+
+// clock() ticks since start, in ms. clock_t is 32-bit unsigned on the EE (CLOCKS_PER_SEC 1000000, wraps every ~71.6
+// min), so the difference is taken modulo 2^32 and converted in 64 bits.
+unsigned long rbElapsedMs(unsigned long start, unsigned long now, unsigned long perSec)
+{
+    unsigned int ticks = (unsigned int)now - (unsigned int)start;
+    return (unsigned long)(((unsigned long long)ticks * 1000ULL) / perSec);
+}
+
+int rbPollDelayMs(int lastExchangeOk)
+{
+    return lastExchangeOk ? RB_POLL_EVERY_MS : RB_POLL_BACKOFF_MS;
+}
+
+int rbJobFresh(unsigned long ageMs)
+{
+    return ageMs <= RB_JOB_MAX_AGE_MS;
+}
