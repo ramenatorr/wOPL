@@ -82,6 +82,23 @@ static void testJob(void)
     CHECK(rbParseJob(longName, &j) == -1); // 161 > RB_NAME_MAX
 }
 
+static void testResponseComplete(void)
+{
+    // select() hung the IO thread on the console (2026-09-30), so the read stops as soon as the reply is whole
+    // instead of waiting for the server to close.
+    const char *nc = "HTTP/1.1 204 No Content\r\ndate: x\r\nserver: uvicorn\r\n\r\n";
+    CHECK(rbResponseComplete(nc, (int)strlen(nc)) == 1);
+    CHECK(rbResponseComplete(nc, (int)strlen(nc) - 2) == 0); // headers not finished
+    const char *ok = "HTTP/1.1 200 OK\r\ncontent-length: 38\r\ncontent-type: text/plain\r\n\r\n"
+                     "job=abc\nname=Gran Turismo 4\nmedia=DV";
+    CHECK(rbResponseComplete(ok, (int)strlen(ok)) == 0); // 36 of 38 body bytes
+    const char *ok2 = "HTTP/1.1 200 OK\r\nContent-Length: 38\r\n\r\njob=abc\nname=Gran Turismo 4\nmedia=DVD\n";
+    CHECK(rbResponseComplete(ok2, (int)strlen(ok2)) == 1);
+    const char *nolen = "HTTP/1.0 200 OK\r\n\r\njob=a\n";
+    CHECK(rbResponseComplete(nolen, (int)strlen(nolen)) == 0); // no length: read to close or deadline
+    CHECK(rbResponseComplete("", 0) == 0);
+}
+
 static void testRequest(void)
 {
     char buf[256];
@@ -115,6 +132,7 @@ int main(void)
     testStatus();
     testJob();
     testRequest();
+    testResponseComplete();
     testTiming();
     printf(failures ? "%d FAILED\n" : "all passed\n", failures);
     return failures != 0;

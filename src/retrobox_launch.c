@@ -4,12 +4,11 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <kernel.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/time.h>
-#include <sys/select.h>
 #include <ps2ips.h>
 #include <libcdvd-common.h>
 
@@ -35,6 +34,8 @@ _Static_assert(RB_MEDIA_DVD == SCECdPS2DVD, "retrobox media DVD");
 #define RB_LWIP_O_NONBLOCK 1
 
 #define RB_TOTAL_MS 2000
+
+#define RB_POLL_STEP_US 10000 // 10 ms between socket polls
 
 static int rbEnabled;
 static struct sockaddr_in rbAddr;
@@ -81,66 +82,61 @@ static void rbTrace(const char *fmt, ...)
     rbTraceFlush();
 }
 
-static int rbWait(int s, int forWrite, int ms)
-{
-    fd_set set;
-    struct timeval tv;
-    int n;
-
-    if (ms <= 0)
-        return 0;
-    FD_ZERO(&set);
-    FD_SET(s, &set);
-    tv.tv_sec = ms / 1000;
-    tv.tv_usec = (ms % 1000) * 1000;
-    n = select(s + 1, forWrite ? NULL : &set, forWrite ? &set : NULL, NULL, &tv);
-    rbTrace("select s=%d write=%d ms=%d -> %d errno=%d", s, forWrite, ms, n, errno);
-    return n;
-}
-
 static int rbMsLeft(clock_t start)
 {
     unsigned long spent = rbElapsedMs(start, clock(), CLOCKS_PER_SEC);
     return spent >= RB_TOTAL_MS ? 0 : (int)(RB_TOTAL_MS - spent);
 }
 
-// One HTTP/1.0 exchange; the server closes the connection after its reply. Returns the bytes read, or -1.
+// One HTTP/1.0 exchange. Returns the bytes read, or -1. No select(): it hung the IO thread on the console
+// (2026-09-30, waiting for the server's close after a whole reply), and ps2ips reports every socket error as -23 so
+// EINPROGRESS/EWOULDBLOCK cannot be told apart from a failure. Instead every step polls the non-blocking socket every
+// RB_POLL_STEP_US, bounded by the connect and total deadlines, and the read stops once the reply is whole.
 static int rbExchange(const char *req, char *resp, int respLen)
 {
     clock_t start = clock();
     int s, n, sent = 0, got = 0, len = strlen(req);
 
     s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    rbTrace("socket -> %d errno=%d", s, errno);
+    rbTrace("socket -> %d", s);
     if (s < 0)
         return -1;
     n = fcntl(s, F_SETFL, RB_LWIP_O_NONBLOCK);
-    rbTrace("fcntl nonblock(%d) -> %d errno=%d", RB_LWIP_O_NONBLOCK, n, errno);
     n = connect(s, (struct sockaddr *)&rbAddr, sizeof(rbAddr));
-    rbTrace("connect %s -> %d errno=%d", rbHost, n, errno);
-    if (n < 0 && rbWait(s, 1, RB_CONNECT_MS) <= 0)
-        goto fail;
+    rbTrace("connect %s -> %d", rbHost, n);
+    // A send succeeds once the handshake is done (lwIP may also queue it during SYN_SENT; the read deadline then
+    // covers a connection that never comes up).
     while (sent < len) {
-        // A refused connection (RST) reads writable and every send then fails: give up at once, never spin to the
-        // deadline. A fresh socket's ~100-byte request always fits the send buffer.
         n = send(s, req + sent, len - sent, 0);
-        rbTrace("send %d -> %d errno=%d", len - sent, n, errno);
-        if (n <= 0)
+        if (n > 0) {
+            sent += n;
+            continue;
+        }
+        if (rbElapsedMs(start, clock(), CLOCKS_PER_SEC) >= RB_CONNECT_MS) {
+            rbTrace("send: no connection within %d ms", RB_CONNECT_MS);
             goto fail;
-        sent += n;
+        }
+        DelayThread(RB_POLL_STEP_US);
     }
     while (got < respLen - 1) {
-        if (rbWait(s, 0, rbMsLeft(start)) <= 0)
-            goto fail;
         n = recv(s, resp + got, respLen - 1 - got, 0);
-        rbTrace("recv -> %d errno=%d", n, errno);
+        if (n > 0) {
+            got += n;
+            resp[got] = '\0';
+            if (rbResponseComplete(resp, got))
+                break;
+            continue;
+        }
         if (n == 0)
-            break;
-        if (n < 0)
+            break; // the server closed
+        if (rbMsLeft(start) <= 0) {
+            rbTrace("recv: %d bytes by the %d ms deadline", got, RB_TOTAL_MS);
             goto fail;
-        got += n;
+        }
+        DelayThread(RB_POLL_STEP_US);
     }
     resp[got] = '\0';
+    rbTrace("exchange ok: sent %d, got %d in %lu ms", sent, got, rbElapsedMs(start, clock(), CLOCKS_PER_SEC));
     close(s);
     return got;
 fail:

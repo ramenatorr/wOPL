@@ -39,6 +39,7 @@ int rbParseJob(const char *resp, rb_job_t *job);
 unsigned long rbElapsedMs(unsigned long start, unsigned long now, unsigned long perSec);
 int rbPollDelayMs(int lastExchangeOk);
 int rbJobFresh(unsigned long ageMs);
+int rbResponseComplete(const char *buf, int len);
 int rbFormatRequest(char *buf, int len, const char *method, const char *path, const char *host, const char *body);
 
 #endif

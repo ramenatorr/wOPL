@@ -2,6 +2,7 @@
 // docs/superpowers/specs/2026-09-30-ps2-opl-http-launch-design.md). No PS2 dependencies.
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 #include "include/retrobox_parse.h"
 
@@ -215,4 +216,37 @@ int rbPollDelayMs(int lastExchangeOk)
 int rbJobFresh(unsigned long ageMs)
 {
     return ageMs <= RB_JOB_MAX_AGE_MS;
+}
+
+// 1 once buf holds a whole reply: headers plus, for a 204/304, nothing; otherwise Content-Length body bytes. 0 while
+// more is due, including a reply without Content-Length (read to close or deadline).
+int rbResponseComplete(const char *buf, int len)
+{
+    const char *end, *p;
+    int status, body;
+    long clen = -1;
+
+    if (len < 12)
+        return 0;
+    end = strstr(buf, "\r\n\r\n");
+    if (!end || end - buf + 4 > len)
+        return 0;
+    status = rbParseStatus(buf);
+    if (status == 204 || status == 304)
+        return 1;
+    for (p = buf; p < end; p++) {
+        if ((p == buf || p[-1] == '\n') && strncasecmp(p, "content-length:", 15) == 0) {
+            const char *q = p + 15;
+            while (*q == ' ' || *q == '\t')
+                q++;
+            clen = 0;
+            while (*q >= '0' && *q <= '9')
+                clen = clen * 10 + (*q++ - '0');
+            break;
+        }
+    }
+    if (clen < 0)
+        return 0;
+    body = len - (int)(end - buf + 4);
+    return body >= clen;
 }
