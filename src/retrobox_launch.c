@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <kernel.h>
+#include <delaythread.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
