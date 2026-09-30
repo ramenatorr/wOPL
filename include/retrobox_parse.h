@@ -21,7 +21,9 @@
 typedef struct
 {
     char ip[16];
+    unsigned char octet[4]; // network order, for sin_addr (inet_addr() is dead in wOPL: no EE-side lwIP)
     int port;
+    int trace; // "trace = 1": write the step trace to <share>retrobox.log
 } rb_addr_t;
 
 typedef struct

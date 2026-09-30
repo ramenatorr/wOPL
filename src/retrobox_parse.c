@@ -65,24 +65,56 @@ static int rbParseBrainLine(const char *p, const char *end, rb_addr_t *out)
         return -1;
     strcpy(out->ip, ip);
     out->port = (int)port;
+    {
+        const char *q = ip;
+        int i;
+        for (i = 0; i < 4; i++) {
+            int v = 0;
+            while (*q >= '0' && *q <= '9')
+                v = v * 10 + (*q++ - '0');
+            out->octet[i] = (unsigned char)v;
+            if (*q == '.')
+                q++;
+        }
+    }
+    return 0;
+}
+
+static int rbParseTraceLine(const char *p, const char *end, int *trace)
+{
+    p = rbSkipSpace(p);
+    if (end - p < 5 || strncmp(p, "trace", 5) != 0)
+        return -1;
+    p = rbSkipSpace(p + 5);
+    if (p >= end || *p != '=')
+        return -1;
+    p = rbSkipSpace(p + 1);
+    if (p >= end || (*p != '0' && *p != '1'))
+        return -1;
+    *trace = *p - '0';
     return 0;
 }
 
 int rbParseConfig(const char *text, rb_addr_t *out)
 {
     const char *line = text;
+    int found = 0;
 
     if (strncmp(line, "\xEF\xBB\xBF", 3) == 0)
         line += 3;
+
+    out->trace = 0;
     while (*line) {
         const char *end = strchr(line, '\n');
         if (!end)
             end = line + strlen(line);
-        if (rbParseBrainLine(line, end, out) == 0)
-            return 0;
+        if (!found && rbParseBrainLine(line, end, out) == 0)
+            found = 1;
+        else
+            rbParseTraceLine(line, end, &out->trace);
         line = *end ? end + 1 : end;
     }
-    return -1;
+    return found ? 0 : -1;
 }
 
 int rbParseStatus(const char *resp)

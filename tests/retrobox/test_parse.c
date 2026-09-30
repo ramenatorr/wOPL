@@ -33,6 +33,21 @@ static void testConfig(void)
     CHECK(rbParseConfig("brain = retrobox.local:8000\n", &a) == -1);
 }
 
+static void testConfigOctetsAndTrace(void)
+{
+    rb_addr_t a;
+    // inet_addr() is dead in wOPL (libcglue's inet ops are only filled by the EE-side lwIP, which is not linked):
+    // the address goes to the socket as parsed octets, in network order.
+    CHECK(rbParseConfig("brain = 192.168.1.20:8000\n", &a) == 0);
+    CHECK(a.octet[0] == 192 && a.octet[1] == 168 && a.octet[2] == 1 && a.octet[3] == 20);
+    CHECK(a.trace == 0);
+    CHECK(rbParseConfig("trace = 1\nbrain = 10.0.0.5:80\n", &a) == 0);
+    CHECK(a.trace == 1 && a.octet[0] == 10 && a.octet[3] == 5);
+    CHECK(rbParseConfig("brain = 10.0.0.5:80\ntrace=0\n", &a) == 0);
+    CHECK(a.trace == 0);
+    CHECK(rbParseConfig("trace = 1\n", &a) == -1); // no brain line: the feature stays off
+}
+
 static void testStatus(void)
 {
     CHECK(rbParseStatus("HTTP/1.1 204 No Content\r\n\r\n") == 204);
@@ -96,6 +111,7 @@ static void testTiming(void)
 int main(void)
 {
     testConfig();
+    testConfigOctetsAndTrace();
     testStatus();
     testJob();
     testRequest();

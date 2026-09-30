@@ -1,7 +1,7 @@
 // retrobox: wOPL asks the retrobox brain what to launch (retro-gaming-box-poc
 // docs/superpowers/specs/2026-09-30-ps2-opl-http-launch-design.md). With no valid retrobox.cfg on the share this
 // file does nothing and wOPL behaves like stock.
-#include <fcntl.h> // before ps2ips.h: tcpip.h's fallback O_NONBLOCK must not win over newlib's
+#include <fcntl.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -11,7 +11,6 @@
 #include <sys/time.h>
 #include <sys/select.h>
 #include <ps2ips.h>
-#include <arpa/inet.h>
 #include <libcdvd-common.h>
 
 #include "include/common.h"
@@ -30,6 +29,11 @@ _Static_assert(RB_MEDIA_DVD == SCECdPS2DVD, "retrobox media DVD");
 
 #define RB_CONNECT_MS 1000
 
+// libcglue hands F_SETFL on a socket to ps2ips' __ps2ipcFcntlfsetflHelper, which passes only (flags & 1) on as
+// FIONBIO -- lwIP's own O_NONBLOCK value. newlib's O_NONBLOCK (0x4000) has bit 0 clear and left the socket blocking
+// (a blocking connect waited ~18 s on the 2026-09-30 console trace).
+#define RB_LWIP_O_NONBLOCK 1
+
 #define RB_TOTAL_MS 2000
 
 static int rbEnabled;
@@ -44,15 +48,26 @@ static clock_t rbLastPollEnd; // when the last poll finished
 static int rbPollDelay;       // ms to the next poll: rbPollDelayMs(last exchange ok)
 static clock_t rbJobAt;       // when rbJob arrived
 
-// retrobox diagnostics (2026-09-30 sitting): a step trace rewritten to <share>retrobox.log, first ~3 KB only.
+// Diagnostics: with "trace = 1" in retrobox.cfg, a step trace (first ~3 KB) is rewritten to <share>retrobox.log.
 static char rbTraceBuf[3072];
 static int rbTraceLen;
 static char rbTracePath[64];
+static int rbTraceOn;
+
+static void rbTraceFlush(void)
+{
+    int fd;
+
+    if (rbTraceOn && (fd = open(rbTracePath, O_WRONLY | O_CREAT | O_TRUNC, 0666)) >= 0) {
+        write(fd, rbTraceBuf, rbTraceLen);
+        close(fd);
+    }
+}
 
 static void rbTrace(const char *fmt, ...)
 {
     va_list ap;
-    int n, fd;
+    int n;
 
     if (!rbTracePath[0] || rbTraceLen > (int)sizeof(rbTraceBuf) - 200)
         return;
@@ -63,10 +78,7 @@ static void rbTrace(const char *fmt, ...)
     va_end(ap);
     rbTraceLen += n;
     rbTraceBuf[rbTraceLen++] = '\n';
-    if ((fd = open(rbTracePath, O_WRONLY | O_CREAT | O_TRUNC, 0666)) >= 0) {
-        write(fd, rbTraceBuf, rbTraceLen);
-        close(fd);
-    }
+    rbTraceFlush();
 }
 
 static int rbWait(int s, int forWrite, int ms)
@@ -102,8 +114,8 @@ static int rbExchange(const char *req, char *resp, int respLen)
     rbTrace("socket -> %d errno=%d", s, errno);
     if (s < 0)
         return -1;
-    n = fcntl(s, F_SETFL, O_NONBLOCK);
-    rbTrace("fcntl O_NONBLOCK(%d) -> %d errno=%d", O_NONBLOCK, n, errno);
+    n = fcntl(s, F_SETFL, RB_LWIP_O_NONBLOCK);
+    rbTrace("fcntl nonblock(%d) -> %d errno=%d", RB_LWIP_O_NONBLOCK, n, errno);
     n = connect(s, (struct sockaddr *)&rbAddr, sizeof(rbAddr));
     rbTrace("connect %s -> %d errno=%d", rbHost, n, errno);
     if (n < 0 && rbWait(s, 1, RB_CONNECT_MS) <= 0)
@@ -174,6 +186,8 @@ void retroboxInit(const char *prefix)
     int fd, n;
 
     rbEnabled = 0;
+    rbTraceOn = 0;
+    rbTraceLen = 0;
     snprintf(rbTracePath, sizeof(rbTracePath), "%sretrobox.log", prefix);
     snprintf(path, sizeof(path), "%sretrobox.cfg", prefix);
     fd = open(path, O_RDONLY, 0666);
@@ -187,14 +201,19 @@ void retroboxInit(const char *prefix)
         return;
     text[n] = '\0';
     n = rbParseConfig(text, &addr);
-    rbTrace("parse -> %d ip=%s port=%d", n, n == 0 ? addr.ip : "-", n == 0 ? addr.port : 0);
+    rbTrace("parse -> %d ip=%s port=%d trace=%d", n, n == 0 ? addr.ip : "-", n == 0 ? addr.port : 0, n == 0 ? addr.trace : 0);
     if (n != 0)
         return;
+    rbTraceOn = addr.trace;
+    rbTraceFlush(); // the lines buffered so far
+    // Byte by byte, in network order: inet_addr() returns 0 here (libcglue's inet ops are only filled by the EE-side
+    // lwIP, which wOPL does not link), which sent every SYN to 0.0.0.0 on the 2026-09-30 console trace.
     memset(&rbAddr, 0, sizeof(rbAddr));
     rbAddr.sin_len = sizeof(rbAddr);
     rbAddr.sin_family = AF_INET;
-    rbAddr.sin_port = htons(addr.port);
-    rbAddr.sin_addr.s_addr = inet_addr(addr.ip);
+    ((unsigned char *)&rbAddr.sin_port)[0] = (unsigned char)(addr.port >> 8);
+    ((unsigned char *)&rbAddr.sin_port)[1] = (unsigned char)(addr.port & 0xFF);
+    memcpy(&rbAddr.sin_addr, addr.octet, 4);
     snprintf(rbHost, sizeof(rbHost), "%s:%d", addr.ip, addr.port);
     rbEnabled = 1;
     LOG("RETROBOX brain %s\n", rbHost);
