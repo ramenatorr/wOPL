@@ -334,6 +334,8 @@ clean:	download_lwNBD
 	$(MAKE) -C modules/network/smap-ingame clean
 	echo " -smbinit"
 	$(MAKE) -C modules/network/smbinit clean
+	echo " -smbman"
+	$(MAKE) -C modules/network/smbman clean
 	echo " -nbns"
 	$(MAKE) -C modules/network/nbns clean
 	echo " -xhdd"
@@ -673,7 +675,11 @@ $(EE_ASM_DIR)netman.c: $(PS2SDK)/iop/irx/netman.irx | $(EE_ASM_DIR)
 $(EE_ASM_DIR)ps2ips.c: $(PS2SDK)/iop/irx/ps2ips.irx | $(EE_ASM_DIR)
 	$(BIN2C) $< $@ $(*F)_irx
 
-$(EE_ASM_DIR)smbman.c: $(PS2SDK)/iop/irx/smbman.irx | $(EE_ASM_DIR)
+# retrobox: in-tree smbman (batched directory listings), see modules/network/smbman/Makefile
+modules/network/smbman/smbman.irx: modules/network/smbman
+	$(MAKE) -C $<
+
+$(EE_ASM_DIR)smbman.c: modules/network/smbman/smbman.irx | $(EE_ASM_DIR)
 	$(BIN2C) $< $@ $(*F)_irx
 
 modules/network/smbinit/smbinit.irx: modules/network/smbinit
