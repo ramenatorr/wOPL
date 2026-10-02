@@ -734,64 +734,59 @@ char *submenuItemGetText(submenu_item_t *it)
         return it->text;
 }
 
-static void swap(submenu_list_t *a, submenu_list_t *b)
+// retrobox: a stable merge sort -- the bubble sort it replaces (also stable, so the order is the same) made ~n²/2
+// strcasecmp calls and swaps on the 1,759-game list. Sorts the next links, then rebuilds the prev links.
+static submenu_list_t *submenuMerge(submenu_list_t *a, submenu_list_t *b)
 {
-    submenu_list_t *pa, *nb;
-    pa = a->prev;
-    nb = b->next;
+    submenu_list_t head, *tail = &head;
 
-    a->next = nb;
-    b->prev = pa;
-    b->next = a;
-    a->prev = b;
+    while (a && b) {
+        // ties keep a (the earlier run) first, like the bubble sort, which only swapped on cmp > 0
+        if (strcasecmp(submenuItemGetText(&a->item), submenuItemGetText(&b->item)) <= 0) {
+            tail->next = a;
+            a = a->next;
+        } else {
+            tail->next = b;
+            b = b->next;
+        }
+        tail = tail->next;
+    }
+    tail->next = a ? a : b;
+    return head.next;
+}
 
-    if (pa)
-        pa->next = b;
+static submenu_list_t *submenuMergeSort(submenu_list_t *list, int count)
+{
+    submenu_list_t *second, *last;
+    int i, half;
 
-    if (nb)
-        nb->prev = a;
+    if (count < 2) {
+        if (list)
+            list->next = NULL;
+        return list;
+    }
+    half = count / 2;
+    for (last = list, i = 1; i < half; i++)
+        last = last->next;
+    second = last->next;
+    last->next = NULL;
+    return submenuMerge(submenuMergeSort(list, half), submenuMergeSort(second, count - half));
 }
 
 // Sorts the given submenu by comparing the on-screen titles
 void submenuSort(submenu_list_t **submenu)
 {
-    // a simple bubblesort
-    // *submenu = mergeSort(*submenu);
-    submenu_list_t *head;
-    int sorted = 0;
+    submenu_list_t *it, *prev;
+    int count;
 
     if ((submenu == NULL) || (*submenu == NULL) || ((*submenu)->next == NULL))
         return;
 
-    head = *submenu;
-
-    while (!sorted) {
-        sorted = 1;
-
-        submenu_list_t *tip = head;
-
-        while (tip->next) {
-            submenu_list_t *nxt = tip->next;
-
-            char *txt1 = submenuItemGetText(&tip->item);
-            char *txt2 = submenuItemGetText(&nxt->item);
-
-            int cmp = strcasecmp(txt1, txt2);
-
-            if (cmp > 0) {
-                swap(tip, nxt);
-
-                if (tip == head)
-                    head = nxt;
-
-                sorted = 0;
-            } else {
-                tip = tip->next;
-            }
-        }
-    }
-
-    *submenu = head;
+    for (count = 0, it = *submenu; it; it = it->next)
+        count++;
+    *submenu = submenuMergeSort(*submenu, count);
+    for (prev = NULL, it = *submenu; it; prev = it, it = it->next)
+        it->prev = prev;
 }
 
 static void menuNextH()

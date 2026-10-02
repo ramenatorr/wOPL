@@ -689,30 +689,31 @@ static void sortISOGameListCache(struct game_cache_list *cache)
     qsort(cache->byName, cache->count, sizeof(base_game_info_t *), cmpCachedGames);
 }
 
+// retrobox: read with one read() -- fread went through newlib's 1 KB stdio buffer, one SMB round trip per KB
+// (2.7 s for the 320 KB DVD games.bin, 2026-10-02 trace).
 static int loadISOGameListCache(const char *path, struct game_cache_list *cache)
 {
     char filename[256];
-    FILE *file;
+    int fd;
     base_game_info_t *games;
     int result, size, count;
 
     freeISOGameListCache(cache);
 
     sprintf(filename, "%s/games.bin", path);
-    file = fopen(filename, "rb");
-    if (file != NULL) {
-        fseek(file, 0, SEEK_END);
-        size = ftell(file);
-        rewind(file);
+    fd = open(filename, O_RDONLY, 0666);
+    if (fd >= 0) {
+        size = sbGetFileSize(fd);
 
         count = size / sizeof(base_game_info_t);
         if (count > 0) {
             games = memalign(64, count * sizeof(base_game_info_t));
             if (games != NULL) {
-                if (fread(games, sizeof(base_game_info_t), count, file) == count) {
+                if (read(fd, games, count * sizeof(base_game_info_t)) == (int)(count * sizeof(base_game_info_t))) {
                     LOG("loadISOGameListCache: %d games loaded.\n", count);
                     cache->count = count;
                     cache->games = games;
+                    retroboxTrace("scan %s: games.bin read", path);
                     sortISOGameListCache(cache);
                     result = 0;
                 } else {
@@ -728,7 +729,7 @@ static int loadISOGameListCache(const char *path, struct game_cache_list *cache)
             result = -1; // Empty file (should not happen)
         }
 
-        fclose(file);
+        close(fd);
     } else {
         result = ENOENT;
     }

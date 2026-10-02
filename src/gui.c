@@ -27,6 +27,8 @@
 #include "include/guigame.h"
 #include "include/tetris.h"
 #include "include/common.h"
+#include "include/retrobox_parse.h"
+#include "include/retrobox_launch.h"
 #include <malloc.h>
 #include <math.h>
 #include <kernel.h>
@@ -1187,8 +1189,10 @@ static void guiHandleOp(struct gui_update_t *item)
             item->menu.menu->last = NULL;
             break;
 
-        case GUI_OP_SORT:
+        case GUI_OP_SORT: {
+            clock_t sortStart = clock();
             submenuSort(item->menu.subMenu);
+            retroboxTrace("menu sorted in %lu ms", rbElapsedMs(sortStart, clock(), CLOCKS_PER_SEC));
             item->menu.menu->submenu = *item->menu.subMenu;
 
             if (!item->menu.menu->remindLast)
@@ -1201,6 +1205,7 @@ static void guiHandleOp(struct gui_update_t *item)
                 tail = tail->next;
             item->menu.menu->last = tail;
             break;
+        }
 
         case GUI_OP_ADD_HINT:
             // append the hint list in the menu item
