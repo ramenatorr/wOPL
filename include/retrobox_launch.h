@@ -10,4 +10,7 @@ void retroboxInit(const char *prefix);
 // GUI thread, end of menuHandleInputMain (main list screen only): queues the ~2 s poll, acts on a received job.
 void retroboxTick(void);
 
+// Any thread: one line in the step trace (<share>retrobox.log), only with "trace = 1" in retrobox.cfg.
+void retroboxTrace(const char *fmt, ...);
+
 #endif

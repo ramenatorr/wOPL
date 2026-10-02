@@ -41,5 +41,6 @@ int rbPollDelayMs(int lastExchangeOk);
 int rbJobFresh(unsigned long ageMs);
 int rbResponseComplete(const char *buf, int len);
 int rbFormatRequest(char *buf, int len, const char *method, const char *path, const char *host, const char *body);
+int rbCmpNameExt(const char *name, int nameMax, const char *ext, const char *filename);
 
 #endif

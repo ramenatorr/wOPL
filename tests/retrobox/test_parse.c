@@ -127,6 +127,33 @@ static void testTiming(void)
     CHECK(RB_JOB_MAX_AGE_MS < 15000); // must expire before the brain's wait_for_opl gives up
 }
 
+static int sign(int v)
+{
+    return (v > 0) - (v < 0);
+}
+
+// rbCmpNameExt must order exactly like strcmp on the joined file name (the cache index is sorted and searched with it).
+static void testCmpNameExt(void)
+{
+    static const char *names[] = {"", "A", "Ab", "Abc", "a", "007 - Agent", "007 - Agent Under Fire", "Zoo", "\xE9t\xE9", "Jak 3"};
+    static const char *exts[] = {"", ".iso", ".zso", ".is", "x"};
+    static const char *files[] = {"", "A", "A.iso", "Ab.iso", "Abc.iso", "Abc.isp", "Abc.is", "a.iso", "Jak 3.iso",
+                                  "007 - Agent.iso", "007 - Agent Under Fire.iso", "007 - Agent Under Fire.zso", "\xE9t\xE9.iso", "Zoo.iso~"};
+    char joined[64];
+    unsigned i, j, k;
+
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        for (j = 0; j < sizeof(exts) / sizeof(exts[0]); j++)
+            for (k = 0; k < sizeof(files) / sizeof(files[0]); k++) {
+                snprintf(joined, sizeof(joined), "%s%s", names[i], exts[j]);
+                CHECK(sign(rbCmpNameExt(names[i], 161, exts[j], files[k])) == sign(strcmp(joined, files[k])));
+            }
+
+    char full[161];
+    memset(full, 'x', sizeof(full)); // no terminator: the length is capped at nameMax
+    CHECK(rbCmpNameExt(full, 161, ".iso", "y") < 0);
+}
+
 int main(void)
 {
     testConfig();
@@ -136,6 +163,7 @@ int main(void)
     testRequest();
     testResponseComplete();
     testTiming();
+    testCmpNameExt();
     printf(failures ? "%d FAILED\n" : "all passed\n", failures);
     return failures != 0;
 }

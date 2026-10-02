@@ -67,21 +67,38 @@ static void rbTraceFlush(void)
     }
 }
 
-static void rbTrace(const char *fmt, ...)
+static void rbTraceV(const char *fmt, va_list ap)
 {
-    va_list ap;
     int n;
 
     if (!rbTracePath[0] || rbTraceLen > (int)sizeof(rbTraceBuf) - 200)
         return;
     n = snprintf(rbTraceBuf + rbTraceLen, sizeof(rbTraceBuf) - rbTraceLen, "%lu ", (unsigned long)(clock() / 1000));
     rbTraceLen += n;
-    va_start(ap, fmt);
     n = vsnprintf(rbTraceBuf + rbTraceLen, sizeof(rbTraceBuf) - rbTraceLen - 1, fmt, ap);
-    va_end(ap);
     rbTraceLen += n;
     rbTraceBuf[rbTraceLen++] = '\n';
     rbTraceFlush();
+}
+
+static void rbTrace(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    rbTraceV(fmt, ap);
+    va_end(ap);
+}
+
+void retroboxTrace(const char *fmt, ...)
+{
+    va_list ap;
+
+    if (!rbTraceOn)
+        return; // other devices scan before the SMB share is up, or with no "trace = 1": nothing to record
+    va_start(ap, fmt);
+    rbTraceV(fmt, ap);
+    va_end(ap);
 }
 
 static int rbMsLeft(clock_t start)

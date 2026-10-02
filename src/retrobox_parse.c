@@ -250,3 +250,12 @@ int rbResponseComplete(const char *buf, int len)
     body = len - (int)(end - buf + 4);
     return body >= clen;
 }
+
+// strcmp(name + ext, filename) without building name + ext: the games.bin cache lookup (supportbase.c) compares every
+// cached entry this way, and snprintf-ing each one on the EE was most of the boot's list scan.
+int rbCmpNameExt(const char *name, int nameMax, const char *ext, const char *filename)
+{
+    size_t n = strnlen(name, nameMax);
+    int r = strncmp(name, filename, n);
+    return r != 0 ? r : strcmp(ext, filename + n);
+}

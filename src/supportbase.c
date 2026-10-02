@@ -21,6 +21,8 @@
 #include "include/tar.h"
 #include "include/config_wopl.h"
 #include "include/pathsupport.h"
+#include "include/retrobox_parse.h"
+#include "include/retrobox_launch.h"
 
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h> // fileXioMount("iso:", ***), fileXioUmount("iso:")
@@ -29,6 +31,8 @@
 #include <malloc.h>
 #include <kernel.h>
 #include <libcdvd-common.h>
+#include <stdlib.h> // qsort
+#include <time.h>   // clock, for the retrobox scan trace
 
 #include "../modules/isofs/zso.h"
 
@@ -56,6 +60,7 @@ struct game_cache_list
 {
     unsigned int count;
     base_game_info_t *games;
+    base_game_info_t **byName; // retrobox: games sorted by file name (name + extension), for a binary search; NULL if out of memory
 };
 
 static int mcID = -1;
@@ -659,6 +664,31 @@ static int GetStartupExecName(const char *path, char *filename, int maxlength)
 
 static void freeISOGameListCache(struct game_cache_list *cache);
 
+static int cmpCachedGames(const void *a, const void *b)
+{
+    const base_game_info_t *ga = *(const base_game_info_t *const *)a;
+    const base_game_info_t *gb = *(const base_game_info_t *const *)b;
+    char fname[ISO_GAME_FNAME_MAX + 1];
+
+    snprintf(fname, sizeof(fname), "%s%s", gb->name, gb->extension);
+    return rbCmpNameExt(ga->name, sizeof(ga->name), ga->extension, fname);
+}
+
+// retrobox: the lookup was a linear scan that snprintf-ed every cached file name for every file in the folder --
+// ~1.5 M snprintf calls for 1,706 images on the EE (the suspected bulk of the ~24 s boot scan). Sorting once makes each
+// lookup a binary search. The cache array itself keeps its order (updateISOGameList compares it to the list in order).
+static void sortISOGameListCache(struct game_cache_list *cache)
+{
+    unsigned int i;
+
+    cache->byName = malloc(cache->count * sizeof(base_game_info_t *));
+    if (cache->byName == NULL)
+        return; // queryISOGameListCache falls back to the linear scan
+    for (i = 0; i < cache->count; i++)
+        cache->byName[i] = &cache->games[i];
+    qsort(cache->byName, cache->count, sizeof(base_game_info_t *), cmpCachedGames);
+}
+
 static int loadISOGameListCache(const char *path, struct game_cache_list *cache)
 {
     char filename[256];
@@ -683,6 +713,7 @@ static int loadISOGameListCache(const char *path, struct game_cache_list *cache)
                     LOG("loadISOGameListCache: %d games loaded.\n", count);
                     cache->count = count;
                     cache->games = games;
+                    sortISOGameListCache(cache);
                     result = 0;
                 } else {
                     LOG("loadISOGameListCache: I/O error.\n");
@@ -711,6 +742,10 @@ static void freeISOGameListCache(struct game_cache_list *cache)
         free(cache->games);
         cache->games = NULL;
         cache->count = 0;
+    }
+    if (cache->byName != NULL) {
+        free(cache->byName);
+        cache->byName = NULL;
     }
 }
 
@@ -798,6 +833,26 @@ static int queryISOGameListCache(const struct game_cache_list *cache, base_game_
     char isoname[ISO_GAME_FNAME_MAX + 1];
     int i;
 
+    if (cache->byName != NULL) {
+        int lo = 0, hi = (int)cache->count - 1;
+
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            const base_game_info_t *g = cache->byName[mid];
+            int r = rbCmpNameExt(g->name, sizeof(g->name), g->extension, filename);
+
+            if (r == 0) {
+                memcpy(ginfo, g, sizeof(base_game_info_t));
+                return 0;
+            }
+            if (r < 0)
+                lo = mid + 1;
+            else
+                hi = mid - 1;
+        }
+        return ENOENT;
+    }
+
     for (i = 0; i < cache->count; i++) {
         snprintf(isoname, sizeof(isoname), "%s%s", cache->games[i].name, cache->games[i].extension);
 
@@ -848,13 +903,17 @@ static void applyISOSizes(char *path, struct game_list_t *glist)
 static int scanForISO(char *path, char type, struct game_list_t **glist)
 {
     int count = 0;
-    struct game_cache_list cache = {0, NULL};
+    struct game_cache_list cache = {0, NULL, NULL};
     base_game_info_t cachedGInfo;
     char fullpath[256];
     struct dirent *dirent;
     DIR *dir;
+    int mounted = 0; // retrobox scan trace: images opened for SYSTEM.CNF (not in games.bin)
+    clock_t t0 = clock();
 
     int cacheLoaded = loadISOGameListCache(path, &cache) == 0;
+    retroboxTrace("scan %s: games.bin %d entries in %lu ms", path, cacheLoaded ? (int)cache.count : -1,
+                  rbElapsedMs(t0, clock(), CLOCKS_PER_SEC));
 
     if ((dir = opendir(path)) != NULL) {
         size_t base_path_len = strlen(path);
@@ -895,6 +954,7 @@ static int scanForISO(char *path, char type, struct game_list_t **glist)
             } else {
                 // need to mount and read SYSTEM.CNF
                 char startup[GAME_STARTUP_MAX];
+                mounted++;
                 int MountFD = fileXioMount("iso:", fullpath, FIO_MT_RDONLY);
 
                 if (MountFD < 0 || GetStartupExecName("iso:/SYSTEM.CNF;1", startup, GAME_STARTUP_MAX - 1) != 0) {
@@ -922,6 +982,7 @@ static int scanForISO(char *path, char type, struct game_list_t **glist)
         }
         closedir(dir);
     }
+    retroboxTrace("scan %s: listed %d games (%d mounted) at %lu ms", path, count, mounted, rbElapsedMs(t0, clock(), CLOCKS_PER_SEC));
 
     if (cacheLoaded) {
         updateISOGameList(path, &cache, *glist, count);
@@ -929,8 +990,14 @@ static int scanForISO(char *path, char type, struct game_list_t **glist)
     } else {
         updateISOGameList(path, NULL, *glist, count);
     }
+    retroboxTrace("scan %s: games.bin checked at %lu ms", path, rbElapsedMs(t0, clock(), CLOCKS_PER_SEC));
 
-    applyISOSizes(path, *glist);
+    // retrobox: over SMB this second pass re-lists the whole folder only to fill sizeMB (shown in the game's info),
+    // one IOP round trip per entry. Left at 0, sbPopulateConfig stats just the one file when its info or launch needs it.
+    if (strncmp(path, "smb", 3) != 0) {
+        applyISOSizes(path, *glist);
+        retroboxTrace("scan %s: sizes at %lu ms", path, rbElapsedMs(t0, clock(), CLOCKS_PER_SEC));
+    }
 
     return count;
 }
