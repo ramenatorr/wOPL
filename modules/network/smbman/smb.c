@@ -1337,7 +1337,36 @@ int smb_Rename(int UID, int TID, char *oldPath, char *newPath)
 }
 
 //-------------------------------------------------------------------------
-int smb_FindFirstNext2(int UID, int TID, char *Path, int cmd, SearchInfo_t *info)
+// retrobox: fills info from one SMB_FIND_FILE_BOTH_DIRECTORY_INFO entry of a FIND_FIRST2/FIND_NEXT2 reply. Returns the
+// entry's NextEntryOffset (0 for the last one), or -EIO if the entry does not fit in the len bytes at data.
+int smb_SearchEntry(const u8 *data, int len, SearchInfo_t *info)
+{
+    const FindFirst2ResponseData_t *FFRspData = (const FindFirst2ResponseData_t *)data;
+
+    if (len < (int)sizeof(FindFirst2ResponseData_t) || FFRspData->FileNameLen > (u32)(len - sizeof(FindFirst2ResponseData_t)))
+        return -EIO;
+
+    memset(&info->fileInfo, 0, sizeof(info->fileInfo));
+    info->fileInfo.Created        = FFRspData->Created;
+    info->fileInfo.LastAccess     = FFRspData->LastAccess;
+    info->fileInfo.LastWrite      = FFRspData->LastWrite;
+    info->fileInfo.Change         = FFRspData->Change;
+    info->fileInfo.FileAttributes = FFRspData->FileAttributes;
+    if (FFRspData->FileAttributes & EXT_ATTR_DIRECTORY)
+        info->fileInfo.IsDirectory = 1;
+    info->fileInfo.AllocationSize = FFRspData->AllocationSize;
+    info->fileInfo.EndOfFile      = FFRspData->EndOfFile;
+    getStringField(info->FileName, FFRspData->FileName, FFRspData->FileNameLen);
+
+    return (int)FFRspData->NextEntryOffset;
+}
+
+//-------------------------------------------------------------------------
+// retrobox: with batch == NULL this is stock smbman -- one entry per request, parsed into info. With a batch buffer the
+// request asks for up to SMB_SEARCH_BATCH_COUNT entries (the server returns as many as fit in MaxDataCount) and the
+// reply's raw entry data is copied to batch, its byte length to *batchLen and its entry count to *batchCount, for
+// smb_SearchEntry. Stock asked for 1: a 1,706-image folder took 1,706 round trips (6.5 s at boot, 2026-10-02 trace).
+int smb_FindFirstNext2(int UID, int TID, char *Path, int cmd, SearchInfo_t *info, u8 *batch, int batchMax, int *batchLen, int *batchCount)
 {
     int r, PathLen, offset;
     FindFirstNext2Request_t *FFNR    = &SMB_buf.smb.findFirstNext2Request;
@@ -1369,7 +1398,7 @@ int smb_FindFirstNext2(int UID, int TID, char *Path, int cmd, SearchInfo_t *info
         FindFirst2RequestParam_t *FFRParam = (FindFirst2RequestParam_t *)&SMB_buf.smb.u8buff[FFNR->smbTrans.ParamOffset];
 
         FFRParam->SearchAttributes = ATTR_READONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_DIRECTORY | ATTR_ARCHIVE;
-        FFRParam->SearchCount      = 1;
+        FFRParam->SearchCount      = batch ? SMB_SEARCH_BATCH_COUNT : 1;
         FFRParam->Flags            = CLOSE_SEARCH_IF_EOS | RESUME_SEARCH;
         FFRParam->LevelOfInterest  = SMB_FIND_FILE_BOTH_DIRECTORY_INFO;
         FFRParam->StorageType      = 0;
@@ -1382,7 +1411,7 @@ int smb_FindFirstNext2(int UID, int TID, char *Path, int cmd, SearchInfo_t *info
         FindNext2RequestParam_t *FNRParam = (FindNext2RequestParam_t *)&SMB_buf.smb.u8buff[FFNR->smbTrans.ParamOffset];
 
         FNRParam->SearchID        = (u16)info->SID;
-        FNRParam->SearchCount     = 1;
+        FNRParam->SearchCount     = batch ? SMB_SEARCH_BATCH_COUNT : 1;
         FNRParam->LevelOfInterest = SMB_FIND_FILE_BOTH_DIRECTORY_INFO;
         FNRParam->ResumeKey       = 0;
         FNRParam->Flags           = CLOSE_SEARCH_IF_EOS | RESUME_SEARCH | CONTINUE_SEARCH;
@@ -1432,21 +1461,25 @@ int smb_FindFirstNext2(int UID, int TID, char *Path, int cmd, SearchInfo_t *info
 
     info->EOS = FFNRspParam->EndOfSearch;
 
+    if (batch) {
+        int dataLen = FFNRsp->smbTrans.DataCount;
+
+        if (FFNRspParam->SearchCount == 0) {
+            *batchLen = *batchCount = 0;
+            return info->EOS ? 0 : -EINVAL;
+        }
+        if (dataLen > batchMax || FFNRsp->smbTrans.DataOffset + dataLen > (int)sizeof(SMB_buf.smb.u8buff))
+            return -EIO;
+        memcpy(batch, FFRspData, dataLen);
+        *batchLen   = dataLen;
+        *batchCount = FFNRspParam->SearchCount;
+        return 0;
+    }
+
     if (FFNRspParam->SearchCount == 0)
         return -EINVAL;
 
-    info->fileInfo.Created        = FFRspData->Created;
-    info->fileInfo.LastAccess     = FFRspData->LastAccess;
-    info->fileInfo.LastWrite      = FFRspData->LastWrite;
-    info->fileInfo.Change         = FFRspData->Change;
-    info->fileInfo.FileAttributes = FFRspData->FileAttributes;
-    if (FFRspData->FileAttributes & EXT_ATTR_DIRECTORY)
-        info->fileInfo.IsDirectory = 1;
-    info->fileInfo.AllocationSize = FFRspData->AllocationSize;
-    info->fileInfo.EndOfFile      = FFRspData->EndOfFile;
-    getStringField(info->FileName, FFRspData->FileName, FFRspData->FileNameLen);
-
-    return 0;
+    return smb_SearchEntry((const u8 *)FFRspData, MAX_SMB_BUF, info) < 0 ? -EIO : 0;
 }
 
 //-------------------------------------------------------------------------

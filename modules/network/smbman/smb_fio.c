@@ -86,6 +86,60 @@ FHANDLE smbman_fdhandles[MAX_FDHANDLES];
 
 static ShareEntry_t ShareList;
 static u8 SearchBuf[SMB_SEARCH_BUF_MAX];
+
+// retrobox: directory listings read entries from a batch (one FIND_FIRST2/FIND_NEXT2 reply) instead of one round trip
+// each. Two batches serve two listings at once; a listing that finds none free is read the stock way, one entry per
+// request.
+#define SMB_DIR_BATCHES 2
+
+typedef struct
+{
+    void *owner; // the FHANDLE reading this batch, NULL if free
+    int len;     // bytes of entry data
+    int pos;     // offset of the next entry to hand out
+    int left;    // entries not handed out yet
+    int eos;     // the reply ended the search (the server closed it: CLOSE_SEARCH_IF_EOS)
+    u8 data[MAX_SMB_BUF];
+} DirBatch_t;
+
+static DirBatch_t dirBatches[SMB_DIR_BATCHES];
+
+static DirBatch_t *dirBatchOf(void *fh)
+{
+    int i;
+
+    for (i = 0; i < SMB_DIR_BATCHES; i++)
+        if (dirBatches[i].owner == fh)
+            return &dirBatches[i];
+    return NULL;
+}
+
+static void dirBatchRelease(void *fh)
+{
+    DirBatch_t *b;
+
+    while ((b = dirBatchOf(fh)) != NULL)
+        b->owner = NULL;
+}
+
+// The batch's next entry into info: 1, 0 once the batch is used up, -EIO for an entry that runs past the reply.
+static int dirBatchNext(DirBatch_t *b, SearchInfo_t *info)
+{
+    int next;
+
+    if (b->left <= 0 || b->pos >= b->len) {
+        b->left = 0;
+        return 0;
+    }
+    next = smb_SearchEntry(b->data + b->pos, b->len - b->pos, info);
+    if (next < 0) {
+        b->left = 0;
+        return -EIO;
+    }
+    b->left = next == 0 ? 0 : b->left - 1; // NextEntryOffset 0: the reply's last entry
+    b->pos += next;
+    return 1;
+}
 static char smb_curdir[SMB_PATH_MAX];
 static char smb_curpath[SMB_PATH_MAX];
 static char smb_secpath[SMB_PATH_MAX];
@@ -387,6 +441,7 @@ int smb_close(iop_file_t *f)
                 goto io_unlock;
             }
         }
+        dirBatchRelease(fh);
         memset(fh, 0, sizeof(FHANDLE));
         fh->smb_fid = -1;
         r           = 0;
@@ -692,17 +747,46 @@ int smb_dread(iop_file_t *f, iox_dirent_t *dirent)
     memset((void *)dirent, 0, sizeof(iox_dirent_t));
 
     SearchInfo_t *info = (SearchInfo_t *)SearchBuf;
+    DirBatch_t *b;
 
     if (fh->smb_fid == -1) {
-        r = smb_FindFirstNext2(UID, TID, fh->name, TRANS2_FIND_FIRST2, info);
-        if (r < 0) {
-            goto io_unlock;
+        // a new listing: drop any batch this handle slot still holds (a handle closed while disconnected keeps it),
+        // then take a free one
+        dirBatchRelease(fh);
+        if ((b = dirBatchOf(NULL)) != NULL) {
+            r = smb_FindFirstNext2(UID, TID, fh->name, TRANS2_FIND_FIRST2, info, b->data, sizeof(b->data), &b->len, &b->left);
+            if (r < 0)
+                goto io_unlock;
+            b->owner    = fh;
+            b->pos      = 0;
+            b->eos      = info->EOS;
+            fh->smb_fid = info->SID;
+            r           = dirBatchNext(b, info);
+        } else {
+            r = smb_FindFirstNext2(UID, TID, fh->name, TRANS2_FIND_FIRST2, info, NULL, 0, NULL, NULL);
+            if (r < 0) {
+                goto io_unlock;
+            }
+            fh->smb_fid = info->SID;
+            r           = 1;
         }
-        fh->smb_fid = info->SID;
-        r           = 1;
+    } else if ((b = dirBatchOf(fh)) != NULL) {
+        if (b->left == 0) {
+            if (b->eos) {
+                r = 0; // end of listing
+                goto io_unlock;
+            }
+            info->SID = fh->smb_fid;
+            r         = smb_FindFirstNext2(UID, TID, NULL, TRANS2_FIND_NEXT2, info, b->data, sizeof(b->data), &b->len, &b->left);
+            if (r < 0)
+                goto io_unlock;
+            b->pos = 0;
+            b->eos = info->EOS;
+        }
+        r = dirBatchNext(b, info);
     } else {
         info->SID = fh->smb_fid;
-        r         = smb_FindFirstNext2(UID, TID, NULL, TRANS2_FIND_NEXT2, info);
+        r         = smb_FindFirstNext2(UID, TID, NULL, TRANS2_FIND_NEXT2, info, NULL, 0, NULL, NULL);
         if (r < 0) {
             goto io_unlock;
         }

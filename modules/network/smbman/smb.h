@@ -873,7 +873,8 @@ extern int smb_TreeDisconnect(int UID, int TID);
 extern int smb_NetShareEnum(int UID, int TID, ShareEntry_t *shareEntries, int index, int maxEntries);
 extern int smb_QueryInformationDisk(int UID, int TID, smbQueryDiskInfo_out_t *QueryInformationDisk);
 extern int smb_QueryPathInformation(int UID, int TID, PathInformation_t *Info, char *Path);
-extern int smb_FindFirstNext2(int UID, int TID, char *Path, int cmd, SearchInfo_t *info);
+extern int smb_FindFirstNext2(int UID, int TID, char *Path, int cmd, SearchInfo_t *info, u8 *batch, int batchMax, int *batchLen, int *batchCount);
+extern int smb_SearchEntry(const u8 *data, int len, SearchInfo_t *info);
 extern int smb_LogOffAndX(int UID);
 extern int smb_Echo(void *echo, int len);
 
@@ -889,5 +890,8 @@ extern int smb_Rename(int UID, int TID, char *oldPath, char *newPath);
 
 #define MAX_SMB_BUF     4096 // must fit on u16 !!!
 #define MAX_SMB_BUF_HDR 128  // Must be at least as large as the largest header structure.
+
+// retrobox: entries asked for per FIND_FIRST2/FIND_NEXT2 with a batch buffer (the reply holds what fits in ~3.8 KB)
+#define SMB_SEARCH_BATCH_COUNT 128
 
 #endif
