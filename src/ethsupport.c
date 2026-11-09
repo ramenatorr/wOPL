@@ -671,6 +671,7 @@ static void ethLaunchGame(item_list_t *itemList, int id, per_game_cfg_t *pgcfg)
         return;
     }
 
+    retroboxStep("ethLaunchGame in; id=%d startup=%s", id, game->startup);
     char vmc_name[32];
     int vmc_id, size_mcemu_irx = 0;
     smb_vmc_infos_t smb_vmc_infos;
@@ -681,7 +682,10 @@ static void ethLaunchGame(item_list_t *itemList, int id, per_game_cfg_t *pgcfg)
         strncpy(vmc_name, vmc_id == 0 ? pgcfg->vmc1 : pgcfg->vmc2, sizeof(vmc_name) - 1);
         vmc_name[sizeof(vmc_name) - 1] = '\0';
         if (vmc_name[0]) {
-            if (sysCheckVMC(ethPrefix, "\\", vmc_name, 0, &vmc_superblock) > 0) {
+            retroboxStep("vmc%d check [%s]", vmc_id, vmc_name);
+            int vmcResult = sysCheckVMC(ethPrefix, "\\", vmc_name, 0, &vmc_superblock);
+            retroboxStep("vmc%d result %d", vmc_id, vmcResult);
+            if (vmcResult > 0) {
                 smb_vmc_infos.flags = vmc_superblock.mc_flag & 0xFF;
                 smb_vmc_infos.flags |= 0x100;
                 smb_vmc_infos.specs.page_size = vmc_superblock.page_size;
@@ -711,10 +715,13 @@ static void ethLaunchGame(item_list_t *itemList, int id, per_game_cfg_t *pgcfg)
         }
     }
 
+    retroboxStep("vmc loop done; last-played next (%d)", gRememberLastPlayed);
     if (gRememberLastPlayed)
         wOPLLastSave(game->startup);
 
+    retroboxStep("sbPrepare next");
     compatmask = sbPrepare(game, pgcfg, size_smb_cdvdman_irx, smb_cdvdman_irx, &i);
+    retroboxStep("sbPrepare back compat=%d", compatmask);
 #ifdef CHEAT
     if ((result = sbLoadCheats(ethPrefix, game->startup)) < 0) {
         switch (result) {
@@ -753,6 +760,7 @@ static void ethLaunchGame(item_list_t *itemList, int id, per_game_cfg_t *pgcfg)
 
     // Initialize layer 1 information.
     sbCreatePath(game, partname, ethPrefix, "\\", 0);
+    retroboxStep("image path [%s] logo=%d", partname, gPS2Logo);
 
     if (gPS2Logo) {
         int fd = open(partname, O_RDONLY, 0666);
@@ -762,7 +770,9 @@ static void ethLaunchGame(item_list_t *itemList, int id, per_game_cfg_t *pgcfg)
         }
     }
 
+    retroboxStep("max LBA next; logo result=%d", EnablePS2Logo);
     layer1_start = sbGetISO9660MaxLBA(partname);
+    retroboxStep("max LBA %lu", (unsigned long)layer1_start);
 
     switch (game->format) {
         case GAME_FORMAT_USBLD:
@@ -775,6 +785,7 @@ static void ethLaunchGame(item_list_t *itemList, int id, per_game_cfg_t *pgcfg)
             layer1_offset = layer1_start;
     }
 
+    retroboxStep("layer probe next");
     if (sbProbeISO9660(partname, game, layer1_offset) != 0) {
         layer1_start = 0;
         LOG("DVD detected.\n");
@@ -792,8 +803,11 @@ static void ethLaunchGame(item_list_t *itemList, int id, per_game_cfg_t *pgcfg)
         filename[sizeof(filename) - 1] = '\0';
     }
 
+    retroboxStep("mmce id next; filename=%s", filename);
     sbMMCESendGameId(game->startup);
 
+    retroboxStep("deinit next: the last line before the game");
+    retroboxStepEnd();
     deinit(NO_EXCEPTION, ETH_MODE); // CAREFUL: deinit will call ethCleanUp, so ethGames/game will be freed
 
     settings->common.fakemodule_flags |= FAKE_MODULE_FLAG_DEV9;

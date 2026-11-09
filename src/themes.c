@@ -1,5 +1,6 @@
 #include "include/common.h"
 #include "include/themes.h"
+#include "include/retrobox_launch.h"
 #include "include/util.h"
 #include "include/gui.h"
 #include "include/renderman.h"
@@ -1192,6 +1193,8 @@ static void drawItemsList(struct menu_list *menu, struct submenu_list *item, ren
             else
                 color = elem->color;
 
+            if (retroboxRenderTrace)
+                retroboxStep("row %d [%s]", others, submenuItemGetText(&ps->item));
             if (itemsList->decoratorImage) {
                 GSTEXTURE *itemIconTex = getGameImageTexture(itemsList->decoratorImage->cache, menu->item->userdata, &ps->item);
                 if (itemIconTex && itemIconTex->Mem)

@@ -101,6 +101,43 @@ void retroboxTrace(const char *fmt, ...)
     va_end(ap);
 }
 
+static char rbStepBuf[7168];
+static int rbStepLen;
+static char rbStepPath[64];
+static volatile int rbStepArmed;
+static int rbStepSema = -1;
+volatile int retroboxRenderTrace;
+
+void retroboxStep(const char *fmt, ...)
+{
+    va_list ap;
+    int n, fd;
+
+    if (!rbStepArmed || rbStepSema < 0)
+        return;
+    WaitSema(rbStepSema);
+    if (rbStepLen <= (int)sizeof(rbStepBuf) - 240) {
+        n = snprintf(rbStepBuf + rbStepLen, sizeof(rbStepBuf) - rbStepLen, "%lu t%d ", (unsigned long)(clock() / 1000), GetThreadId());
+        rbStepLen += n;
+        va_start(ap, fmt);
+        n = vsnprintf(rbStepBuf + rbStepLen, 200, fmt, ap);
+        va_end(ap);
+        rbStepLen += n > 199 ? 199 : n;
+        rbStepBuf[rbStepLen++] = '\n';
+        if ((fd = open(rbStepPath, O_WRONLY | O_CREAT | O_TRUNC, 0666)) >= 0) {
+            write(fd, rbStepBuf, rbStepLen);
+            close(fd);
+        }
+    }
+    SignalSema(rbStepSema);
+}
+
+void retroboxStepEnd(void)
+{
+    rbStepArmed = 0; // the network goes away next
+    retroboxRenderTrace = 0;
+}
+
 static int rbMsLeft(clock_t start)
 {
     unsigned long spent = rbElapsedMs(start, clock(), CLOCKS_PER_SEC);
@@ -256,6 +293,18 @@ void retroboxInit(const char *prefix)
     rbTraceOn = 0;
     rbTraceLen = 0;
     snprintf(rbTracePath, sizeof(rbTracePath), "%sretrobox.log", prefix);
+    snprintf(rbStepPath, sizeof(rbStepPath), "%sretrobox-launch.log", prefix);
+    if (rbStepSema < 0) {
+        ee_sema_t sema;
+        memset(&sema, 0, sizeof(sema));
+        sema.init_count = 1;
+        sema.max_count = 1;
+        rbStepSema = CreateSema(&sema);
+    }
+    rbStepArmed = 1;
+    rbStepLen = 0;
+    retroboxStep("debug build ready");
+    rbStepArmed = 0;
     snprintf(path, sizeof(path), "%sretrobox.cfg", prefix);
     fd = open(path, O_RDONLY, 0666);
     rbTrace("init open %s -> %d errno=%d", path, fd, errno);
@@ -314,6 +363,9 @@ static void rbActOnJob(void)
     int hits = 0;
     char body[96];
 
+    rbStepArmed = 1;
+    rbStepLen = 0;
+    retroboxStep("job %s media=%d name=[%s]", rbJob.id, rbJob.media, rbJob.name);
     guiLock(); // the IO thread clears the list under this lock (menuClearGameList)
     for (node = mod->menuItem.submenu; node; node = node->next) {
         base_game_info_t *game = (base_game_info_t *)support->itemGet(support, node->item.id);
@@ -327,6 +379,7 @@ static void rbActOnJob(void)
         mod->menuItem.pagestart = hit;
     }
     guiUnlock();
+    retroboxStep("hits=%d id=%d", hits, hit ? hit->item.id : -1);
 
     if (hits != 1) {
         snprintf(body, sizeof(body), "job=%s\nreason=%s\n", rbJob.id, hits ? "ambiguous" : "not_found");
@@ -335,14 +388,19 @@ static void rbActOnJob(void)
     }
     snprintf(body, sizeof(body), "job=%s\n", rbJob.id);
     rbPost("/opl/claimed", body); // before the launch: it tears the network down
+    retroboxStep("claim posted");
     rbDisconnect();
+    retroboxStep("socket closed");
     menuSetSelectedItem(&mod->menuItem);
+    retroboxStep("selected item set; gSelectButton=%d", gSelectButton);
+    retroboxRenderTrace = 1;
     // Exactly as the autostart firing (menuHandleInputMain): per-game config, VMCs and compat modes all apply.
     // Returns only if the launch did not happen (a declined VMC prompt, an error box); polling then resumes.
     if (gSelectButton == KEY_CIRCLE)
         mod->menuItem.execCircle(&mod->menuItem);
     else
         mod->menuItem.execCross(&mod->menuItem);
+    retroboxStep("exec returned: no launch happened");
 }
 
 void retroboxTick(void)

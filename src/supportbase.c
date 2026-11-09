@@ -1384,7 +1384,9 @@ void sbPopulateConfig(base_game_info_t *game, const char *prefix, const char *se
     snprintf(cfg_path, sizeof(cfg_path), "%sCFG%s%s.cfg", prefix, sep, game->startup);
 
     if (gi) {
+        retroboxStep("game info load [%s]", info_path);
         wOPLGameInfoLoad(info_path, gi);
+        retroboxStep("game info loaded");
 
         // fallback if not set.. fill for display.. don't save
         if (!gi->title[0]) {

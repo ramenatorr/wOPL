@@ -296,11 +296,14 @@ static void _menuLoadConfig()
     memset(&gi, 0, sizeof(gi));
     memset(&pg, 0, sizeof(pg));
 
+    retroboxStep("_menuLoadConfig: itemGetInfo next id=%d", id);
     if (list->itemGetInfo)
         list->itemGetInfo(list, id, &gi);
+    retroboxStep("itemGetInfo back");
 
     if (list->itemGetPgCfg)
         list->itemGetPgCfg(list, id, &pg);
+    retroboxStep("itemGetPgCfg back");
 
     WaitSema(menuSemaId);
     if (!itemConfigPtr && itemConfigId == id && itemConfigOwner == list) {
@@ -336,7 +339,9 @@ static void _menuSaveConfig()
 
 static void _menuRequestConfig()
 {
+    retroboxStep("_menuRequestConfig in");
     WaitSema(menuSemaId);
+    retroboxStep("_menuRequestConfig sema taken");
     if (selected_item->item->current != NULL) {
         item_list_t *owner = menuGetCurrentConfigOwner();
         int id = selected_item->item->current->item.id;
@@ -361,7 +366,9 @@ per_game_cfg_t *menuLoadConfig()
     itemConfigId = -1;
     itemConfigOwner = NULL;
     itemConfigPtr = NULL;
+    retroboxStep("guiHandleDeferedIO next");
     guiHandleDeferedIO(&actionStatus, _l(_STR_LOADING_SETTINGS), IO_CUSTOM_SIMPLEACTION, &_menuRequestConfig);
+    retroboxStep("guiHandleDeferedIO back");
     return &itemPgCfg;
 }
 
@@ -1154,13 +1161,18 @@ static void menuRenderElements(theme_element_t *elem, int requestConfig)
     if (requestConfig)
         _menuRequestConfig();
 
+    if (retroboxRenderTrace)
+        retroboxStep("render elements: taking sema");
     WaitSema(menuSemaId);
 
     ctx = requestConfig ? itemConfigPtr : NULL;
 
     while (elem) {
-        if (elem->drawElem)
+        if (elem->drawElem) {
+            if (retroboxRenderTrace)
+                retroboxStep("draw elem type=%d", elem->type);
             elem->drawElem(selected_item, selected_item->item->current, ctx, elem);
+        }
 
         elem = elem->next;
     }

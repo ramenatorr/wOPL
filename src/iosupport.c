@@ -1,4 +1,5 @@
 #include "include/common.h"
+#include "include/retrobox_launch.h"
 #include "include/ioman.h"
 #include "include/gui.h"
 #include "include/guigame.h"
@@ -26,13 +27,18 @@ void itemInitSupport(item_list_t *support)
 void itemExecSelect(struct menu_item *curMenu)
 {
     item_list_t *support = curMenu->userdata;
+    retroboxStep("itemExecSelect in; sfx next");
     sfxPlay(SFX_CONFIRM);
+    retroboxStep("sfx played");
 
     if (support) {
         if (support->enabled) {
             if (curMenu->current) {
+                retroboxStep("menuLoadConfig next; current id=%d", curMenu->current->item.id);
                 per_game_cfg_t *pgcfg = menuLoadConfig();
+                retroboxStep("menuLoadConfig back; vmc1=[%s]", pgcfg ? pgcfg->vmc1 : "(null)");
                 cacheCancelPendingImageLoads();
+                retroboxStep("image loads cancelled; itemLaunch next");
                 support->itemLaunch(support, curMenu->current->item.id, pgcfg);
             }
         } else {

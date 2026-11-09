@@ -2018,7 +2018,9 @@ int guiMsgBox(const char *text, int addAccept, struct UIItem *ui)
 
 void guiHandleDeferedIO(int *ptr, const char *message, int type, void *data)
 {
+    retroboxStep("ioPutRequest next");
     ioPutRequest(type, data);
+    retroboxStep("ioPutRequest back; waiting (status=%d)", *ptr);
 
     while (*ptr)
         guiRenderTextScreen(message);
@@ -2040,17 +2042,33 @@ void guiGameHandleDeferedIO(int *ptr, struct UIItem *ui, int type, void *data)
 
 void guiRenderTextScreen(const char *message)
 {
+    int rt = retroboxRenderTrace;
+
+    if (rt)
+        retroboxStep("text screen: guiStartFrame");
     guiStartFrame();
+    if (rt)
+        retroboxStep("text screen: guiShow");
 
     guiShow();
 
+    if (rt)
+        retroboxStep("text screen: guiShow back");
     rmDrawRect(0, 0, screenWidth, screenHeight, gColDarker);
 
     fntRenderString(gTheme->fonts[0], screenWidth >> 1, gTheme->usedHeight >> 1, ALIGN_CENTER, 0, 0, message, gTheme->textColor);
 
+    if (rt)
+        retroboxStep("text screen: overlays");
     guiDrawOverlays();
+    if (rt)
+        retroboxStep("text screen: guiEndFrame");
 
     guiEndFrame();
+    if (rt) {
+        retroboxStep("text screen: frame done");
+        retroboxRenderTrace = 0;
+    }
 }
 
 void guiWarning(const char *text, int count)

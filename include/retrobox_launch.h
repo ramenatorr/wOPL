@@ -13,4 +13,10 @@ void retroboxTick(void);
 // Any thread: one line in the step trace (<share>retrobox.log), only with "trace = 1" in retrobox.cfg.
 void retroboxTrace(const char *fmt, ...);
 
+// DEBUG BUILD (retrobox/debug-launch-trace): one line per step of a brain launch in <share>retrobox-launch.log, flushed
+// line by line so the last line names where a hang happened. A no-op until rbActOnJob arms it.
+void retroboxStep(const char *fmt, ...);
+void retroboxStepEnd(void);
+extern volatile int retroboxRenderTrace; // non-zero: trace the first frame drawn after the claim, element by element
+
 #endif
