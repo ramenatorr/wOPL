@@ -388,9 +388,9 @@ static void rbActOnJob(void)
     }
     snprintf(body, sizeof(body), "job=%s\n", rbJob.id);
     rbPost("/opl/claimed", body); // before the launch: it tears the network down
-    retroboxStep("claim posted");
-    rbDisconnect();
-    retroboxStep("socket closed");
+    retroboxStep("claim posted; socket left open");
+    // Not closed here: close() hung the GUI thread for some games (2026-11-09: the debug log stopped right here), and
+    // the launch tears the whole network down anyway. If the launch does not happen, polling reuses this connection.
     menuSetSelectedItem(&mod->menuItem);
     retroboxStep("selected item set; gSelectButton=%d", gSelectButton);
     retroboxRenderTrace = 1;
