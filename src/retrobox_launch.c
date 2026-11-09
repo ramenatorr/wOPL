@@ -335,7 +335,9 @@ static void rbActOnJob(void)
     }
     snprintf(body, sizeof(body), "job=%s\n", rbJob.id);
     rbPost("/opl/claimed", body); // before the launch: it tears the network down
-    rbDisconnect();
+    // The socket is left open on purpose: close() hung the GUI thread for some games (2026-11-09: Aliens vs. Predator
+    // and Capcom vs. SNK 2, every remote launch), and the launch tears the network down anyway. If the launch does not
+    // happen (a declined VMC prompt, an error box), polling carries on over this same connection.
     menuSetSelectedItem(&mod->menuItem);
     // Exactly as the autostart firing (menuHandleInputMain): per-game config, VMCs and compat modes all apply.
     // Returns only if the launch did not happen (a declined VMC prompt, an error box); polling then resumes.
